@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsup src/index.ts --format cjs",
+    "build": "tsc",
     "start": "node dist/index.js"
   },
   "keywords": [],
@@ -15,16 +15,15 @@
     "@fastify/cors": "^11.0.1",
     "@fastify/multipart": "^9.0.3",
     "@supabase/supabase-js": "^2.49.8",
+    "@types/node": "^22.15.21",
     "cheerio": "^1.0.0",
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
     "playwright": "^1.61.1",
+    "typescript": "^5.8.3",
     "zod": "^3.25.42"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
-    "tsup": "^8.5.0",
-    "tsx": "^4.19.4",
-    "typescript": "^5.8.3"
+    "tsx": "^4.19.4"
   }
 }

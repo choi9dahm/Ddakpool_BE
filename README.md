@@ -32,3 +32,13 @@ npm run dev
 curl http://localhost:4000/health
 # {"ok":true}
 ```
+
+## Render 배포
+
+| 설정 | 값 |
+|------|-----|
+| Root Directory | *(저장소 루트 — backend 단독 repo 기준)* |
+| Build Command | `npm install && npm run build` |
+| Start Command | `npm start` |
+
+> `build`는 `tsc`로 `dist/`를 생성합니다. Render production 설치에서도 빌드되도록 `typescript`는 dependencies에 포함되어 있습니다.
