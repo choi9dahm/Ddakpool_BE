@@ -2,11 +2,12 @@
   "name": "ddakpool-api",
   "version": "1.0.0",
   "description": "Ddakpool job posting library API",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "tsx src/index.ts"
+    "postinstall": "npm run build",
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
@@ -20,8 +21,13 @@
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
     "playwright": "^1.61.1",
-    "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "zod": "^3.25.42"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

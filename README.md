@@ -39,9 +39,9 @@ curl http://localhost:4000/health
 |------|-----|
 | Root Directory | *(비워두기 — backend 단독 repo)* |
 | Build Command | `npm install` |
-| Start Command | `npm start` |
+| Start Command | `node dist/index.js` |
 
-> `npm start`는 `tsx src/index.ts`로 실행되어 **빌드(`dist/`) 없이** 바로 구동됩니다.  
-> Render 대시보드에서 Start Command가 `node dist/index.js`로 되어 있다면 **`npm start`로 변경**하세요.
+> `postinstall` 스크립트가 `npm install` 직후 `tsc`로 `dist/`를 자동 생성합니다.  
+> Start Command는 `node dist/index.js` 또는 `npm start` 모두 사용 가능합니다.
 
 배포 후에도 같은 에러가 나면 Render → **Settings → Clear build cache & deploy** 를 실행하세요.
