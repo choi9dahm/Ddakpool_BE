@@ -2,7 +2,7 @@ services:
   - type: web
     name: ddakpool-api
     runtime: node
-    buildCommand: npm install && npm run build
+    buildCommand: npm install
     startCommand: npm start
     envVars:
       - key: NODE_VERSION

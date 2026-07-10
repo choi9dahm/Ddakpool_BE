@@ -37,8 +37,11 @@ curl http://localhost:4000/health
 
 | 설정 | 값 |
 |------|-----|
-| Root Directory | *(저장소 루트 — backend 단독 repo 기준)* |
-| Build Command | `npm install && npm run build` |
+| Root Directory | *(비워두기 — backend 단독 repo)* |
+| Build Command | `npm install` |
 | Start Command | `npm start` |
 
-> `build`는 `tsc`로 `dist/`를 생성합니다. Render production 설치에서도 빌드되도록 `typescript`는 dependencies에 포함되어 있습니다.
+> `npm start`는 `tsx src/index.ts`로 실행되어 **빌드(`dist/`) 없이** 바로 구동됩니다.  
+> Render 대시보드에서 Start Command가 `node dist/index.js`로 되어 있다면 **`npm start`로 변경**하세요.
+
+배포 후에도 같은 에러가 나면 Render → **Settings → Clear build cache & deploy** 를 실행하세요.
