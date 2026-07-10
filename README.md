@@ -53,8 +53,8 @@ Render **Environment**에 아래 변수를 추가하세요.
 
 | 변수 | 예시 |
 |------|------|
-| `CORS_ORIGIN` | `https://your-frontend.vercel.app` |
+| `CORS_ORIGIN` | `http://localhost:3000,https://pm6-final-group-10-fe.vercel.app` |
 | `CORS_ALLOW_VERCEL` | `true` |
 
 로컬과 배포를 함께 쓰려면:
-`CORS_ORIGIN=http://localhost:3000,https://your-frontend.vercel.app`
+`CORS_ORIGIN=http://localhost:3000,https://pm6-final-group-10-fe.vercel.app`
