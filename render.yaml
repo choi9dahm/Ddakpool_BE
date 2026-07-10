@@ -7,3 +7,8 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: CORS_ALLOW_VERCEL
+        value: "true"
+      # 프론트엔드 배포 URL로 변경 (쉼표로 여러 개 가능)
+      - key: CORS_ORIGIN
+        sync: false

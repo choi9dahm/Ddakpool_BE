@@ -9,6 +9,7 @@ import { authRoutes } from "./routes/auth.routes.js";
 import { profileRoutes } from "./routes/profile.routes.js";
 import { jobsRoutes } from "./routes/jobs.routes.js";
 import { closePageReader } from "./services/parser/pageReader.js";
+import { getCorsOptions } from "./lib/cors.js";
 
 dotenv.config();
 
@@ -24,11 +25,7 @@ app.decorate("supabase", supabaseAdmin);
 app.setErrorHandler(errorHandler);
 
 async function start() {
-  await app.register(cors, {
-    origin: process.env.CORS_ORIGIN ?? "http://localhost:3000",
-    credentials: true,
-    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  });
+  await app.register(cors, getCorsOptions());
 
   await app.register(multipart, {
     limits: { fileSize: 5 * 1024 * 1024 },
