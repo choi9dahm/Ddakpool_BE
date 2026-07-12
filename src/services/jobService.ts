@@ -13,7 +13,7 @@ import { AppError } from "../middleware/errorHandler.js";
 import { createKeywordExtractor, normalizeKeywords } from "./llm/KeywordExtractor.js";
 import {
   createFieldExtractor,
-  mergeParsedFields,
+  mergeLlmFields,
 } from "./llm/FieldExtractor.js";
 import { fetchAndParse, classifyParseResult } from "./parser/index.js";
 import { validateJobUrl } from "./parser/urlValidator.js";
@@ -158,14 +158,19 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
   let fields = parsedFields;
   let classification = classifyParseResult(fields, fetchFailed);
 
-  if (!fetchFailed && classification.status !== "success" && fields.raw_text.trim()) {
+  // 원문(B)이 있으면 LLM이 각 필드에 맞게 내용을 분류해 채운다.
+  if (!fetchFailed && fields.raw_text.trim()) {
     const fieldExtractor = createFieldExtractor();
     const extracted = await fieldExtractor.extract(fields.raw_text);
     if (extracted) {
-      fields = mergeParsedFields(fields, extracted);
+      fields = mergeLlmFields(fields, extracted);
       classification = classifyParseResult(fields, false);
     }
   }
+
+  // 모집 분야는 파싱된 직무명과 항상 동일하게 저장한다. (JD-DP-INS-01 / JD-DP-03)
+  fields = { ...fields, recruitment_field: fields.job_title };
+
   const extractor = createKeywordExtractor();
 
   let keywords: string[] = [];
@@ -326,6 +331,14 @@ export async function updateJob(
       ? normalizeKeywords(payload.competency_keywords)
       : undefined,
   };
+
+  // 직무명과 모집 분야는 항상 동일하게 유지한다. 사용자가 모집 분야를 수정하면
+  // 직무명도 함께 동기화되고, 그 반대도 동일하게 동작한다. (JD-DP-INS-01 / JD-DP-03)
+  if (payload.recruitment_field !== undefined || payload.job_title !== undefined) {
+    const synced = payload.recruitment_field ?? payload.job_title;
+    allowed.recruitment_field = synced;
+    allowed.job_title = synced;
+  }
 
   const clean = Object.fromEntries(
     Object.entries(allowed).filter(([, v]) => v !== undefined)

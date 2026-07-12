@@ -2,6 +2,7 @@ import * as cheerio from "cheerio";
 import { fetchRenderedPage } from "./pageReader.js";
 import {
   extractSaraminRecIdx,
+  fetchSaraminDetailBody,
   fetchSaraminDetailHtml,
   hasSaraminDetailContent,
   parseSaraminDetail,
@@ -68,6 +69,13 @@ function parseDeadline(raw: string): string | null {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
+// 상시/수시채용은 마감일이 없으므로 공란으로 둔다. (JD-DP-INS-08)
+function normalizeDeadlineRaw(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || /상시|수시|채용\s*시|충원\s*시/.test(trimmed)) return "";
+  return trimmed;
+}
+
 export async function parseSaramin(
   html: string,
   url: string
@@ -83,7 +91,9 @@ export async function parseSaramin(
   const qualifications = textOrEmpty($, ".wrap_qualification, [class*='qualification']");
   const preferences = textOrEmpty($, ".wrap_preference, [class*='preference']");
   const industry = textOrEmpty($, ".company_info dd, .corp_info");
-  const deadline_raw = textOrEmpty($, ".date_end, .closing_date, [class*='deadline']");
+  const deadline_raw = normalizeDeadlineRaw(
+    textOrEmpty($, ".date_end, .closing_date, [class*='deadline']")
+  );
   const required_documents = textOrEmpty($, "[class*='document'], [class*='서류']");
   const application_method = textOrEmpty($, "[class*='apply'], [class*='지원']");
   const raw_text =
@@ -118,7 +128,9 @@ export async function parseJobkorea(
   const qualifications = textOrEmpty($, "[class*='qualification'], .tbQual");
   const preferences = textOrEmpty($, "[class*='preference'], .tbPref");
   const industry = textOrEmpty($, ".coDesc, .company_info");
-  const deadline_raw = textOrEmpty($, ".date, .closing, [class*='deadline']");
+  const deadline_raw = normalizeDeadlineRaw(
+    textOrEmpty($, ".date, .closing, [class*='deadline']")
+  );
   const required_documents = textOrEmpty($, "[class*='document']");
   const application_method = textOrEmpty($, "[class*='apply']");
   const raw_text =
@@ -244,7 +256,15 @@ async function parseSaraminFromAjax(
     return null;
   }
 
-  const fields = parseSaraminDetail(detailHtml, url);
+  // 상세요강(B 영역) iframe 본문을 별도로 가져온다.
+  const detailBody = await fetchSaraminDetailBody(detailHtml, url, httpTimeout);
+  if (debug) {
+    console.info(
+      `[parse] saramin detail body textLen=${detailBody.text.length} images=${detailBody.imageUrls.length}`
+    );
+  }
+
+  const fields = parseSaraminDetail(detailHtml, url, detailBody);
   if (hasSaraminDetailContent(fields)) {
     if (debug) console.info("[parse] saramin ajax ok");
     return { fields, fetchFailed: false };

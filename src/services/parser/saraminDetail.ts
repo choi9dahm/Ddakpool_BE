@@ -7,6 +7,13 @@ const FETCH_HEADERS = {
   "Accept-Language": "ko-KR,ko;q=0.9",
 };
 
+const SARAMIN_ORIGIN = "https://www.saramin.co.kr";
+
+export interface SaraminDetailBody {
+  text: string;
+  imageUrls: string[];
+}
+
 export function extractSaraminRecIdx(url: string): string | null {
   try {
     const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
@@ -51,6 +58,83 @@ export async function fetchSaraminDetailHtml(
   }
 }
 
+function resolveIframeUrl(src: string): string {
+  if (src.startsWith("http")) return src;
+  if (src.startsWith("//")) return `https:${src}`;
+  if (src.startsWith("/")) return `${SARAMIN_ORIGIN}${src}`;
+  return `${SARAMIN_ORIGIN}/${src}`;
+}
+
+function extractDetailIframeUrl(ajaxHtml: string): string | null {
+  const $ = cheerio.load(ajaxHtml);
+  const src = $("iframe#iframe_content_0, iframe.iframe_content").first().attr("src");
+  return src ? resolveIframeUrl(src) : null;
+}
+
+function extractUserContent(html: string): SaraminDetailBody {
+  const $ = cheerio.load(html);
+  $("script, style, noscript").remove();
+
+  const content = $(".user_content").first();
+  const scope = content.length ? content : $("body");
+
+  const imageUrls: string[] = [];
+  scope.find("img").each((_, el) => {
+    const src = $(el).attr("src") || $(el).attr("data-src") || "";
+    if (/^https?:/.test(src) && !imageUrls.includes(src)) {
+      imageUrls.push(src);
+    }
+  });
+
+  scope.find("br").replaceWith("\n");
+  scope.find("p, div, li, tr, h1, h2, h3, h4, h5, h6").each((_, el) => {
+    $(el).append("\n");
+  });
+
+  const text = scope
+    .text()
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return { text, imageUrls };
+}
+
+/**
+ * 상세요강(B 영역)은 view-ajax 응답 내부의 iframe(view-detail)에 별도로
+ * 로드된다. 이 iframe 본문을 가져와 텍스트/이미지를 추출한다.
+ */
+export async function fetchSaraminDetailBody(
+  ajaxHtml: string,
+  refererUrl: string,
+  timeoutMs = 10000
+): Promise<SaraminDetailBody> {
+  const iframeUrl = extractDetailIframeUrl(ajaxHtml);
+  if (!iframeUrl) return { text: "", imageUrls: [] };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(iframeUrl, {
+      signal: controller.signal,
+      headers: {
+        ...FETCH_HEADERS,
+        Referer: refererUrl.split("#")[0],
+      },
+    });
+
+    if (!response.ok) return { text: "", imageUrls: [] };
+    return extractUserContent(await response.text());
+  } catch {
+    return { text: "", imageUrls: [] };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function textOrEmpty($: cheerio.CheerioAPI, selector: string): string {
   return $(selector).first().text().replace(/\s+/g, " ").trim();
 }
@@ -71,6 +155,17 @@ function parseDeadline(raw: string): string | null {
   if (!match) return null;
   const [, y, m, d] = match;
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+}
+
+// 상시/수시채용처럼 마감일이 없는 공고는 마감일 필드를 공란으로 둔다. (JD-DP-INS-08)
+function isRecurringDeadline(raw: string): boolean {
+  return /상시|수시|채용\s*시|충원\s*시|채용시\s*마감/.test(raw);
+}
+
+function normalizeDeadlineRaw(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || isRecurringDeadline(trimmed)) return "";
+  return trimmed;
 }
 
 function cleanDetailText(text: string): string {
@@ -97,7 +192,8 @@ function extractSectionText($: cheerio.CheerioAPI, heading: string): string {
 
 function buildSaraminRawText(
   $: cheerio.CheerioAPI,
-  fields: Omit<ParsedFields, "raw_text">
+  fields: Omit<ParsedFields, "raw_text">,
+  detailBody?: SaraminDetailBody
 ): string {
   const sections: string[] = [];
 
@@ -107,8 +203,19 @@ function buildSaraminRawText(
   const summary = extractSectionText($, "핵심 정보");
   if (summary) sections.push(`[핵심 정보]\n${summary}`);
 
-  const detail = extractSectionText($, "상세요강");
-  if (detail) sections.push(`[상세요강]\n${detail}`);
+  // 상세요강(B 영역)은 iframe 본문에서 가져온다. 텍스트가 없고 이미지로만
+  // 등록된 공고는 이미지 URL을 스냅샷에 남긴다.
+  const detailText = detailBody?.text?.trim() ?? "";
+  const detailImages = detailBody?.imageUrls ?? [];
+  if (detailText) {
+    sections.push(`[상세요강]\n${detailText}`);
+  } else {
+    const fallbackDetail = extractSectionText($, "상세요강");
+    if (fallbackDetail) sections.push(`[상세요강]\n${fallbackDetail}`);
+  }
+  if (detailImages.length > 0) {
+    sections.push(`[상세요강 이미지]\n${detailImages.join("\n")}`);
+  }
 
   if (fields.qualifications) {
     sections.push(`[자격요건]\n${fields.qualifications}`);
@@ -133,7 +240,11 @@ function buildSaraminRawText(
   return `${fields.company_name} ${fields.job_title} ${fields.qualifications} ${fields.preferences}`.trim();
 }
 
-export function parseSaraminDetail(html: string, url: string): ParsedFields {
+export function parseSaraminDetail(
+  html: string,
+  url: string,
+  detailBody?: SaraminDetailBody
+): ParsedFields {
   const $ = cheerio.load(html);
   $("script, style, noscript").remove();
 
@@ -143,18 +254,14 @@ export function parseSaraminDetail(html: string, url: string): ParsedFields {
   const qualifications = cleanDetailText(getDtDdValue($, "자격요건"));
   const preferences = cleanDetailText(getDtDdValue($, "우대사항"));
   const industry = cleanDetailText(getDtDdValue($, "업종"));
-  const deadline_raw = getDtDdValue($, "마감일");
+  const deadline_raw = normalizeDeadlineRaw(getDtDdValue($, "마감일"));
   const application_method = getDtDdValue($, "지원방법");
   const required_documents = cleanDetailText(getDtDdValue($, "접수양식"));
 
-  const summaryParts = ["경력", "학력", "근무형태", "급여", "근무지역"]
-    .map((label) => {
-      const value = getDtDdValue($, label);
-      return value ? `${label}: ${value}` : "";
-    })
-    .filter(Boolean);
-
-  const job_description = summaryParts.join(" | ");
+  // 담당업무(job_description)는 LLM이 원문(raw_text)에서 분류해 채운다.
+  // 규칙 기반으로는 공고마다 형식이 달라 본문을 정확히 나눌 수 없기 때문에
+  // 여기서는 비워 두고, 요약 메타데이터는 raw_text 스냅샷에만 남긴다.
+  const job_description = "";
 
   const baseFields = {
     company_name,
@@ -170,7 +277,7 @@ export function parseSaraminDetail(html: string, url: string): ParsedFields {
     application_method,
   };
 
-  const raw_text = buildSaraminRawText($, baseFields);
+  const raw_text = buildSaraminRawText($, baseFields, detailBody);
 
   return {
     ...baseFields,

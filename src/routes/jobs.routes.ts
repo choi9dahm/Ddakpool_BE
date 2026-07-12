@@ -26,7 +26,11 @@ const updateJobSchema = z.object({
   preferences: z.string().optional(),
   industry: z.string().optional(),
   deadline_raw: z.string().optional(),
-  deadline_date: z.string().nullable().optional(),
+  deadline_date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "마감일은 YYYY-MM-DD 형식이어야 합니다.")
+    .nullable()
+    .optional(),
   required_documents: z.string().optional(),
   application_method: z.string().optional(),
   raw_text: z.string().optional(),

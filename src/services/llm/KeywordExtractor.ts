@@ -66,11 +66,11 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
         },
         body: JSON.stringify({
           model,
+          reasoning_effort: "minimal",
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userContent },
           ],
-          temperature: 0.2,
         }),
       });
 
