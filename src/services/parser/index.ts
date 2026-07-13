@@ -7,6 +7,12 @@ import {
   hasSaraminDetailContent,
   parseSaraminDetail,
 } from "./saraminDetail.js";
+import {
+  extractJobkoreaGno,
+  fetchJobkoreaDetailBody,
+  hasJobkoreaDetailContent,
+  parseJobkoreaDetail,
+} from "./jobkoreaDetail.js";
 
 export interface ParsedFields {
   company_name: string;
@@ -181,6 +187,13 @@ export async function fetchAndParse(
     }
   }
 
+  if (platform === "jobkorea") {
+    const jobkoreaResult = await parseJobkoreaFromPage(resolvedUrl, httpTimeout, debug);
+    if (jobkoreaResult) {
+      return jobkoreaResult;
+    }
+  }
+
   const httpResult = await fetchHtml(resolvedUrl, httpTimeout);
   if (!httpResult.failureReason && httpResult.html) {
     const fields = await parsePlatformHtml(platform, httpResult.html, resolvedUrl);
@@ -278,6 +291,49 @@ async function parseSaraminFromAjax(
   return null;
 }
 
+async function parseJobkoreaFromPage(
+  url: string,
+  httpTimeout: number,
+  debug: boolean
+): Promise<{ fields: ParsedFields; fetchFailed: boolean } | null> {
+  const gno = extractJobkoreaGno(url);
+  if (!gno) {
+    if (debug) console.info("[parse] jobkorea: Gno not found in URL");
+    return null;
+  }
+
+  const mainResult = await fetchHtml(url, httpTimeout);
+  if (mainResult.failureReason || !mainResult.html.trim()) {
+    if (debug) {
+      console.info(
+        `[parse] jobkorea main fetch failed: ${mainResult.failureReason ?? "empty"}`
+      );
+    }
+    return null;
+  }
+
+  // 상세 공고 본문(B영역) iframe을 별도로 가져온다.
+  const detailBody = await fetchJobkoreaDetailBody(gno, url, httpTimeout);
+  if (debug) {
+    console.info(
+      `[parse] jobkorea detail body textLen=${detailBody.text.length} images=${detailBody.imageUrls.length}`
+    );
+  }
+
+  const fields = parseJobkoreaDetail(mainResult.html, detailBody);
+  if (hasJobkoreaDetailContent(fields)) {
+    if (debug) console.info("[parse] jobkorea page ok");
+    return { fields, fetchFailed: false };
+  }
+
+  if (fields.job_title.trim() || fields.company_name.trim()) {
+    if (debug) console.info("[parse] jobkorea page partial");
+    return { fields, fetchFailed: false };
+  }
+
+  return null;
+}
+
 async function resolveRedirectUrl(url: string, timeoutMs: number): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -320,6 +376,9 @@ function hasUsableContent(
 ): boolean {
   if (platform === "saramin") {
     return hasSaraminDetailContent(fields);
+  }
+  if (hasJobkoreaDetailContent(fields)) {
+    return true;
   }
   return fields.raw_text.trim().length >= 200;
 }
