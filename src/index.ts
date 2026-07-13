@@ -10,6 +10,7 @@ import { profileRoutes } from "./routes/profile.routes.js";
 import { jobsRoutes } from "./routes/jobs.routes.js";
 import { closePageReader } from "./services/parser/pageReader.js";
 import { getCorsOptions } from "./lib/cors.js";
+import { shutdownPostHog } from "./lib/posthog.js";
 
 dotenv.config();
 
@@ -35,6 +36,7 @@ async function start() {
 
   app.addHook("onClose", async () => {
     await closePageReader();
+    await shutdownPostHog();
   });
 
   await app.register(authRoutes);
@@ -49,8 +51,25 @@ async function start() {
   await app.listen({ port, host: "0.0.0.0" });
 }
 
+// 종료 시 app.close()를 호출해 onClose hook(PostHog flush 등)이 실행되도록 한다.
+let shuttingDown = false;
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await app.close();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      process.exit(0);
+    }
+  });
+}
+
 start().catch(async (err) => {
   console.error(err);
   await closePageReader();
+  await shutdownPostHog();
   process.exit(1);
 });

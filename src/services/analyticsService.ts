@@ -1,5 +1,6 @@
 import { devListJobs } from "../db/devStore.js";
 import { isSupabaseConfigured, supabaseAdmin } from "../db/supabase.js";
+import { capturePostHog } from "../lib/posthog.js";
 
 export type AnalyticsEventName =
   | "url_submitted"
@@ -12,6 +13,11 @@ export async function logEvent(
   eventName: AnalyticsEventName,
   eventData: Record<string, unknown> = {}
 ) {
+  // PostHog 서버 이벤트 전송(distinct id = 로그인 유저 id). Supabase 설정과 무관하게 동작.
+  if (userId) {
+    capturePostHog(userId, eventName, eventData);
+  }
+
   if (!isSupabaseConfigured()) return;
 
   await supabaseAdmin.from("analytics_events").insert({
