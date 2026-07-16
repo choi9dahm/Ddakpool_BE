@@ -24,6 +24,7 @@ import { validateJobUrl } from "./parser/urlValidator.js";
 import { logEvent } from "./analyticsService.js";
 import { resolveJobImage, resolveJobImages, resolveJobsImages } from "./jobImageUrl.js";
 import { validateFolderId } from "./folderService.js";
+import { resolveDeadlineFields } from "../lib/deadlineStatus.js";
 import {
   keywordTexts,
   normalizeStructuredKeywords,
@@ -181,6 +182,16 @@ export async function parseAndCreateJob(
 
   fields = { ...fields, recruitment_field: fields.job_title };
 
+  const deadlineFields = resolveDeadlineFields(
+    fields.deadline_raw,
+    fields.deadline_date
+  );
+  fields = {
+    ...fields,
+    deadline_raw: deadlineFields.deadline_raw,
+    deadline_date: deadlineFields.deadline_date,
+  };
+
   const extractor = createKeywordExtractor();
 
   let keywords: StructuredKeyword[] = [];
@@ -209,7 +220,7 @@ export async function parseAndCreateJob(
       industry: fields.industry,
       deadline_raw: fields.deadline_raw,
       deadline_date: fields.deadline_date,
-      deadline_status: null,
+      deadline_status: deadlineFields.deadline_status,
       required_documents: fields.required_documents,
       application_method: fields.application_method,
       raw_text: fields.raw_text,
@@ -237,6 +248,7 @@ export async function parseAndCreateJob(
       industry: fields.industry,
       deadline_raw: fields.deadline_raw,
       deadline_date: fields.deadline_date,
+      deadline_status: deadlineFields.deadline_status,
       required_documents: fields.required_documents,
       application_method: fields.application_method,
       raw_text: fields.raw_text,

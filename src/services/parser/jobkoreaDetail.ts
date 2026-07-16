@@ -60,14 +60,15 @@ function parseDeadline(raw: string): string | null {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
-// 상시/수시채용처럼 마감일이 없는 공고는 마감일 필드를 공란으로 둔다. (JD-DP-INS-08)
+// 상시/수시채용은 신호값 "상시채용"으로 남기고, 저장 직전에 status로 변환한다.
 function isRecurringDeadline(raw: string): boolean {
   return /상시|수시|채용\s*시|충원\s*시|채용시\s*마감/.test(raw);
 }
 
 function normalizeDeadlineRaw(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed || isRecurringDeadline(trimmed)) return "";
+  if (!trimmed) return "";
+  if (isRecurringDeadline(trimmed)) return "상시채용";
   return trimmed;
 }
 

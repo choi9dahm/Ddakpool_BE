@@ -75,10 +75,11 @@ function parseDeadline(raw: string): string | null {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
-// 상시/수시채용은 마감일이 없으므로 공란으로 둔다. (JD-DP-INS-08)
+// 상시/수시채용은 신호값 "상시채용"으로 남기고, 저장 직전에 status로 변환한다.
 function normalizeDeadlineRaw(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed || /상시|수시|채용\s*시|충원\s*시/.test(trimmed)) return "";
+  if (!trimmed) return "";
+  if (/상시|수시|채용\s*시|충원\s*시/.test(trimmed)) return "상시채용";
   return trimmed;
 }
 
