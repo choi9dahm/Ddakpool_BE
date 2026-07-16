@@ -10,7 +10,11 @@ import {
   devUpdateJob,
 } from "../db/devStore.js";
 import { AppError } from "../middleware/errorHandler.js";
-import { createKeywordExtractor, normalizeKeywords } from "./llm/KeywordExtractor.js";
+import {
+  createKeywordExtractor,
+  normalizeKeywords,
+  normalizeStructuredKeywordsFromUnknown,
+} from "./llm/KeywordExtractor.js";
 import {
   createFieldExtractor,
   mergeLlmFields,
@@ -19,6 +23,13 @@ import { fetchAndParse, classifyParseResult } from "./parser/index.js";
 import { validateJobUrl } from "./parser/urlValidator.js";
 import { logEvent } from "./analyticsService.js";
 import { resolveJobImage, resolveJobImages, resolveJobsImages } from "./jobImageUrl.js";
+import { validateFolderId } from "./folderService.js";
+import {
+  keywordTexts,
+  normalizeStructuredKeywords,
+  parseStructuredKeywords,
+  type StructuredKeyword,
+} from "../lib/keywords.js";
 
 export type SortOption =
   | "company_asc"
@@ -28,8 +39,7 @@ export type SortOption =
   | "deadline_asc"
   | "deadline_desc";
 
-const PURPOSE_TAGS = ["지원예정", "직무분석", "관심기업", "기타"] as const;
-export type PurposeTag = (typeof PURPOSE_TAGS)[number];
+export type DeadlineStatus = "always_open" | "closed" | null;
 
 export interface JobPostingRow {
   id: string;
@@ -38,7 +48,7 @@ export interface JobPostingRow {
   platform: string;
   parsing_status: string;
   parse_failure_reason: string | null;
-  purpose_tag: string | null;
+  folder_id: string | null;
   company_name: string;
   job_title: string;
   recruitment_field: string;
@@ -48,33 +58,15 @@ export interface JobPostingRow {
   industry: string;
   deadline_raw: string;
   deadline_date: string | null;
+  deadline_status: DeadlineStatus;
   required_documents: string;
   application_method: string;
   raw_text: string;
   memo: string;
-  competency_keywords: string[];
+  competency_keywords: StructuredKeyword[];
   saved_at: string;
   updated_at: string;
   job_posting_images?: { id: string; storage_path: string; sort_order: number }[];
-}
-
-function parseKeywordArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-  }
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed.filter(
-          (item): item is string => typeof item === "string" && item.trim().length > 0
-        );
-      }
-    } catch {
-      return value.trim() ? [value.trim()] : [];
-    }
-  }
-  return [];
 }
 
 function companySortKey(name: string): string {
@@ -86,12 +78,23 @@ function companySortKey(name: string): string {
   return `4${name}`;
 }
 
-function isExpired(deadlineDate: string | null): boolean {
-  if (!deadlineDate) return false;
+function isExpired(job: Pick<JobPostingRow, "deadline_date" | "deadline_status">): boolean {
+  if (job.deadline_status === "closed") return true;
+  if (job.deadline_status === "always_open") return false;
+  if (!job.deadline_date) return false;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const deadline = new Date(deadlineDate);
+  const deadline = new Date(job.deadline_date);
   return deadline < today;
+}
+
+function normalizeJobRow(row: Record<string, unknown>): JobPostingRow {
+  return {
+    ...(row as unknown as JobPostingRow),
+    competency_keywords: parseStructuredKeywords(row.competency_keywords),
+    deadline_status: (row.deadline_status as DeadlineStatus) ?? null,
+    folder_id: (row.folder_id as string | null) ?? null,
+  };
 }
 
 export function sortJobs(
@@ -101,8 +104,8 @@ export function sortJobs(
   const copy = [...jobs];
 
   if (sort.startsWith("deadline")) {
-    const active = copy.filter((j) => !isExpired(j.deadline_date));
-    const expired = copy.filter((j) => isExpired(j.deadline_date));
+    const active = copy.filter((j) => !isExpired(j));
+    const expired = copy.filter((j) => isExpired(j));
 
     const sortFn = (a: JobPostingRow, b: JobPostingRow) => {
       const da = a.deadline_date ?? "9999-12-31";
@@ -140,13 +143,22 @@ export function sortJobs(
   return copy;
 }
 
-export async function parseAndCreateJob(userId: string, urlInput: string) {
+export async function parseAndCreateJob(
+  userId: string,
+  urlInput: string,
+  folderId?: string | null
+) {
   const validation = validateJobUrl(urlInput);
   if (!validation.valid) {
     throw new AppError(400, validation.message, validation.code);
   }
 
-  await logEvent(userId, "url_submitted", { url: validation.normalizedUrl });
+  const resolvedFolderId = await validateFolderId(userId, folderId);
+
+  await logEvent(userId, "url_submitted", {
+    url: validation.normalizedUrl,
+    folder_id: resolvedFolderId,
+  });
 
   const timeoutMs = Number(process.env.PARSE_TIMEOUT_MS ?? 30000);
   const { fields: parsedFields, fetchFailed, failureReason } = await fetchAndParse(
@@ -158,7 +170,6 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
   let fields = parsedFields;
   let classification = classifyParseResult(fields, fetchFailed);
 
-  // 원문(B)이 있으면 LLM이 각 필드에 맞게 내용을 분류해 채운다.
   if (!fetchFailed && fields.raw_text.trim()) {
     const fieldExtractor = createFieldExtractor();
     const extracted = await fieldExtractor.extract(fields.raw_text);
@@ -168,18 +179,17 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
     }
   }
 
-  // 모집 분야는 파싱된 직무명과 항상 동일하게 저장한다. (JD-DP-INS-01 / JD-DP-03)
   fields = { ...fields, recruitment_field: fields.job_title };
 
   const extractor = createKeywordExtractor();
 
-  let keywords: string[] = [];
+  let keywords: StructuredKeyword[] = [];
   if (classification.status !== "fail") {
     keywords = await extractor.extract({
       qualifications: fields.qualifications,
       preferences: fields.preferences,
     });
-    keywords = normalizeKeywords(keywords);
+    keywords = normalizeStructuredKeywords(keywords);
   }
 
   if (!isSupabaseConfigured()) {
@@ -189,7 +199,7 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
       parsing_status: classification.status,
       parse_failure_reason:
         failureReason ?? classification.failureReason ?? null,
-      purpose_tag: null,
+      folder_id: resolvedFolderId,
       company_name: fields.company_name,
       job_title: fields.job_title,
       recruitment_field: fields.recruitment_field,
@@ -199,6 +209,7 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
       industry: fields.industry,
       deadline_raw: fields.deadline_raw,
       deadline_date: fields.deadline_date,
+      deadline_status: null,
       required_documents: fields.required_documents,
       application_method: fields.application_method,
       raw_text: fields.raw_text,
@@ -216,6 +227,7 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
       platform: validation.platform,
       parsing_status: classification.status,
       parse_failure_reason: failureReason ?? classification.failureReason ?? null,
+      folder_id: resolvedFolderId,
       company_name: fields.company_name,
       job_title: fields.job_title,
       recruitment_field: fields.recruitment_field,
@@ -241,15 +253,17 @@ export async function parseAndCreateJob(userId: string, urlInput: string) {
     result: classification.status,
     platform: validation.platform,
     job_id: data.id,
+    folder_id: resolvedFolderId,
   });
 
-  return { job: data as JobPostingRow, parseResult: classification.status };
+  return { job: normalizeJobRow(data), parseResult: classification.status };
 }
 
 export async function listJobs(
   userId: string,
   options: {
-    tag?: string;
+    folderId?: string;
+    uncategorized?: boolean;
     keywords?: string[];
     excludeExpired?: boolean;
     sort?: SortOption;
@@ -265,22 +279,24 @@ export async function listJobs(
     .select("*, job_posting_images(id, storage_path, sort_order)")
     .eq("user_id", userId);
 
-  if (options.tag && PURPOSE_TAGS.includes(options.tag as PurposeTag)) {
-    query = query.eq("purpose_tag", options.tag);
+  if (options.uncategorized) {
+    query = query.is("folder_id", null);
+  } else if (options.folderId) {
+    query = query.eq("folder_id", options.folderId);
   }
 
   const { data, error } = await query;
   if (error) throw new AppError(500, error.message);
 
-  let jobs = (data ?? []) as JobPostingRow[];
+  let jobs = (data ?? []).map((row) => normalizeJobRow(row));
 
   if (options.excludeExpired) {
-    jobs = jobs.filter((j) => !isExpired(j.deadline_date));
+    jobs = jobs.filter((j) => !isExpired(j));
   }
 
   if (options.keywords?.length) {
     jobs = jobs.filter((j) => {
-      const kw = parseKeywordArray(j.competency_keywords);
+      const kw = keywordTexts(j.competency_keywords);
       return options.keywords!.some((k) => kw.includes(k));
     });
   }
@@ -304,16 +320,30 @@ export async function getJob(userId: string, jobId: string) {
     .single();
 
   if (error || !data) throw new AppError(404, "공고를 찾을 수 없습니다.");
-  return resolveJobImages(data as JobPostingRow);
+  return resolveJobImages(normalizeJobRow(data));
+}
+
+function normalizeKeywordPayload(
+  value: unknown
+): StructuredKeyword[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+    return normalizeKeywords(value as string[]);
+  }
+  return normalizeStructuredKeywords(parseStructuredKeywords(value));
 }
 
 export async function updateJob(
   userId: string,
   jobId: string,
-  payload: Partial<JobPostingRow>
+  payload: Partial<JobPostingRow> & { competency_keywords?: unknown }
 ) {
-  const allowed: Partial<JobPostingRow> = {
-    purpose_tag: payload.purpose_tag,
+  if (payload.folder_id !== undefined) {
+    await validateFolderId(userId, payload.folder_id);
+  }
+
+  const allowed: Record<string, unknown> = {
+    folder_id: payload.folder_id,
     company_name: payload.company_name,
     job_title: payload.job_title,
     recruitment_field: payload.recruitment_field,
@@ -323,17 +353,14 @@ export async function updateJob(
     industry: payload.industry,
     deadline_raw: payload.deadline_raw,
     deadline_date: payload.deadline_date,
+    deadline_status: payload.deadline_status,
     required_documents: payload.required_documents,
     application_method: payload.application_method,
     raw_text: payload.raw_text,
     memo: payload.memo,
-    competency_keywords: payload.competency_keywords
-      ? normalizeKeywords(payload.competency_keywords)
-      : undefined,
+    competency_keywords: normalizeKeywordPayload(payload.competency_keywords),
   };
 
-  // 직무명과 모집 분야는 항상 동일하게 유지한다. 사용자가 모집 분야를 수정하면
-  // 직무명도 함께 동기화되고, 그 반대도 동일하게 동작한다. (JD-DP-INS-01 / JD-DP-03)
   if (payload.recruitment_field !== undefined || payload.job_title !== undefined) {
     const synced = payload.recruitment_field ?? payload.job_title;
     allowed.recruitment_field = synced;
@@ -360,15 +387,15 @@ export async function updateJob(
 
   if (error) throw new AppError(500, error.message);
 
-  if (payload.purpose_tag) {
-    await logEvent(userId, "tag_assigned", {
+  if (payload.folder_id) {
+    await logEvent(userId, "folder_assigned", {
       job_id: jobId,
-      tag: payload.purpose_tag,
+      folder_id: payload.folder_id,
     });
   }
 
   await logEvent(userId, "save_success", { job_id: jobId });
-  return data as JobPostingRow;
+  return normalizeJobRow(data);
 }
 
 export async function deleteJob(userId: string, jobId: string) {
@@ -400,14 +427,12 @@ export async function getAllKeywords(userId: string): Promise<string[]> {
 
   const set = new Set<string>();
   for (const row of data ?? []) {
-    for (const kw of parseKeywordArray(row.competency_keywords)) {
+    for (const kw of keywordTexts(row.competency_keywords)) {
       set.add(kw);
     }
   }
 
-  const keywords = [...set].sort((a, b) => a.localeCompare(b, "ko"));
-
-  return keywords;
+  return [...set].sort((a, b) => a.localeCompare(b, "ko"));
 }
 
 export async function addJobImage(
@@ -470,4 +495,4 @@ export async function deleteJobImage(
   if (error) throw new AppError(500, error.message);
 }
 
-export { PURPOSE_TAGS };
+export { normalizeStructuredKeywordsFromUnknown };

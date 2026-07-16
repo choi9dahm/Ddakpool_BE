@@ -8,6 +8,7 @@ import { authMiddleware } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.routes.js";
 import { profileRoutes } from "./routes/profile.routes.js";
 import { jobsRoutes } from "./routes/jobs.routes.js";
+import { foldersRoutes } from "./routes/folders.routes.js";
 import { closePageReader } from "./services/parser/pageReader.js";
 import { getCorsOptions } from "./lib/cors.js";
 import { shutdownPostHog } from "./lib/posthog.js";
@@ -45,6 +46,7 @@ async function start() {
     protectedRoutes.addHook("preHandler", authMiddleware);
     await protectedRoutes.register(profileRoutes);
     await protectedRoutes.register(jobsRoutes);
+    await protectedRoutes.register(foldersRoutes);
   });
 
   const port = Number(process.env.PORT ?? 4000);

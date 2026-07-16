@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JobPostingRow } from "../services/jobService.js";
+import type { FolderRow } from "../services/folderService.js";
+import { DEFAULT_FOLDER_SEEDS } from "../services/folderService.js";
 
 export const DEV_USER_ID = "00000000-0000-0000-0000-000000000001";
 export const DEV_AUTH_TOKEN = "dev-local-token";
@@ -9,12 +11,14 @@ interface DevProfile {
   email: string;
   nickname: string;
   avatar_url: string | null;
+  onboarding_completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
 const profiles = new Map<string, DevProfile>();
 const jobs = new Map<string, JobPostingRow>();
+const folders = new Map<string, FolderRow>();
 
 function now() {
   return new Date().toISOString();
@@ -28,6 +32,7 @@ function ensureProfile(userId: string): DevProfile {
       email: "dev@local.test",
       nickname: "개발자",
       avatar_url: null,
+      onboarding_completed_at: null,
       created_at: now(),
       updated_at: now(),
     };
@@ -42,7 +47,11 @@ export function devGetProfile(userId: string) {
 
 export function devUpdateProfile(
   userId: string,
-  updates: { nickname?: string; avatar_url?: string }
+  updates: {
+    nickname?: string;
+    avatar_url?: string;
+    onboarding_completed_at?: string | null;
+  }
 ) {
   const profile = ensureProfile(userId);
   const updated = {
@@ -59,6 +68,108 @@ export function devDeleteAccount(userId: string) {
   for (const [id, job] of jobs) {
     if (job.user_id === userId) jobs.delete(id);
   }
+  for (const [id, folder] of folders) {
+    if (folder.user_id === userId) folders.delete(id);
+  }
+}
+
+function userFolders(userId: string) {
+  return [...folders.values()]
+    .filter((f) => f.user_id === userId)
+    .sort((a, b) => a.slot - b.slot);
+}
+
+export function devEnsureDefaultFolders(userId: string): FolderRow[] {
+  const existing = userFolders(userId);
+  const usedSlots = new Set(existing.map((f) => f.slot));
+
+  for (const seed of DEFAULT_FOLDER_SEEDS) {
+    if (usedSlots.has(seed.slot)) continue;
+    const id = randomUUID();
+    const timestamp = now();
+    folders.set(id, {
+      id,
+      user_id: userId,
+      name: seed.name,
+      slot: seed.slot,
+      created_at: timestamp,
+      updated_at: timestamp,
+    });
+  }
+
+  return userFolders(userId);
+}
+
+export function devGetFolders(userId: string) {
+  return userFolders(userId);
+}
+
+export function devSaveFolders(
+  userId: string,
+  inputs: { id?: string; name: string; slot: number }[],
+  deletedIds: string[] = []
+) {
+  for (const id of deletedIds) {
+    const folder = folders.get(id);
+    if (!folder || folder.user_id !== userId) continue;
+    for (const job of jobs.values()) {
+      if (job.user_id === userId && job.folder_id === id) {
+        job.folder_id = null;
+        job.updated_at = now();
+        jobs.set(job.id, job);
+      }
+    }
+    folders.delete(id);
+  }
+
+  const keptIds = new Set<string>();
+  const result: FolderRow[] = [];
+
+  for (const input of inputs) {
+    const timestamp = now();
+    if (input.id && folders.has(input.id)) {
+      const existing = folders.get(input.id)!;
+      if (existing.user_id !== userId) continue;
+      const updated: FolderRow = {
+        ...existing,
+        name: input.name.trim(),
+        slot: input.slot,
+        updated_at: timestamp,
+      };
+      folders.set(input.id, updated);
+      keptIds.add(input.id);
+      result.push(updated);
+      continue;
+    }
+
+    const id = randomUUID();
+    const folder: FolderRow = {
+      id,
+      user_id: userId,
+      name: input.name.trim(),
+      slot: input.slot,
+      created_at: timestamp,
+      updated_at: timestamp,
+    };
+    folders.set(id, folder);
+    keptIds.add(id);
+    result.push(folder);
+  }
+
+  for (const folder of userFolders(userId)) {
+    if (!keptIds.has(folder.id) && !deletedIds.includes(folder.id)) {
+      for (const job of jobs.values()) {
+        if (job.user_id === userId && job.folder_id === folder.id) {
+          job.folder_id = null;
+          job.updated_at = now();
+          jobs.set(job.id, job);
+        }
+      }
+      folders.delete(folder.id);
+    }
+  }
+
+  return result.sort((a, b) => a.slot - b.slot);
 }
 
 export function devCreateJob(
@@ -82,30 +193,36 @@ export function devCreateJob(
 export function devListJobs(
   userId: string,
   options: {
-    tag?: string;
+    folderId?: string | null;
+    uncategorized?: boolean;
     keywords?: string[];
     excludeExpired?: boolean;
   }
 ) {
   let result = [...jobs.values()].filter((j) => j.user_id === userId);
 
-  if (options.tag) {
-    result = result.filter((j) => j.purpose_tag === options.tag);
+  if (options.uncategorized) {
+    result = result.filter((j) => !j.folder_id);
+  } else if (options.folderId) {
+    result = result.filter((j) => j.folder_id === options.folderId);
   }
 
   if (options.excludeExpired) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     result = result.filter((j) => {
+      if (j.deadline_status === "closed") return false;
+      if (j.deadline_status === "always_open") return true;
       if (!j.deadline_date) return true;
       return new Date(j.deadline_date) >= today;
     });
   }
 
   if (options.keywords?.length) {
-    result = result.filter((j) =>
-      options.keywords!.some((k) => (j.competency_keywords ?? []).includes(k))
-    );
+    result = result.filter((j) => {
+      const texts = (j.competency_keywords ?? []).map((k) => k.text);
+      return options.keywords!.some((k) => texts.includes(k));
+    });
   }
 
   return result;
@@ -140,7 +257,7 @@ export function devGetAllKeywords(userId: string) {
   const set = new Set<string>();
   for (const job of jobs.values()) {
     if (job.user_id !== userId) continue;
-    for (const kw of job.competency_keywords ?? []) set.add(kw);
+    for (const kw of job.competency_keywords ?? []) set.add(kw.text);
   }
   return [...set].sort((a, b) => a.localeCompare(b, "ko"));
 }

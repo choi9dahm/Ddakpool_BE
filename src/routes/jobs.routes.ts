@@ -14,10 +14,20 @@ import {
 import { uploadJobImage } from "../services/profileService.js";
 import { isSupabaseConfigured } from "../db/supabase.js";
 
-const parseSchema = z.object({ url: z.string().min(1) });
+const structuredKeywordSchema = z.object({
+  text: z.string().min(1).max(20),
+  source_section: z.enum(["자격요건", "우대사항", "기타"]),
+  order: z.number().int().min(0),
+  source: z.enum(["llm", "user"]),
+});
+
+const parseSchema = z.object({
+  url: z.string().min(1),
+  folder_id: z.string().uuid().nullable().optional(),
+});
 
 const updateJobSchema = z.object({
-  purpose_tag: z.enum(["지원예정", "직무분석", "관심기업", "기타"]).nullable().optional(),
+  folder_id: z.string().uuid().nullable().optional(),
   company_name: z.string().optional(),
   job_title: z.string().optional(),
   recruitment_field: z.string().optional(),
@@ -31,22 +41,30 @@ const updateJobSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "마감일은 YYYY-MM-DD 형식이어야 합니다.")
     .nullable()
     .optional(),
+  deadline_status: z.enum(["always_open", "closed"]).nullable().optional(),
   required_documents: z.string().optional(),
   application_method: z.string().optional(),
   raw_text: z.string().optional(),
   memo: z.string().max(5000).optional(),
-  competency_keywords: z.array(z.string()).max(30).optional(),
+  competency_keywords: z
+    .union([z.array(z.string()).max(30), z.array(structuredKeywordSchema).max(30)])
+    .optional(),
 });
 
 export async function jobsRoutes(app: FastifyInstance) {
   app.post("/jobs/parse", async (request) => {
     const body = parseSchema.parse(request.body);
-    return parseAndCreateJob(request.user!.id, body.url);
+    return parseAndCreateJob(
+      request.user!.id,
+      body.url,
+      body.folder_id ?? null
+    );
   });
 
   app.get("/jobs", async (request) => {
     const query = request.query as {
-      tag?: string;
+      folderId?: string;
+      uncategorized?: string;
       keywords?: string | string[];
       excludeExpired?: string;
       sort?: SortOption;
@@ -59,7 +77,8 @@ export async function jobsRoutes(app: FastifyInstance) {
       : undefined;
 
     return listJobs(request.user!.id, {
-      tag: query.tag,
+      folderId: query.folderId,
+      uncategorized: query.uncategorized === "true",
       keywords,
       excludeExpired: query.excludeExpired === "true",
       sort: query.sort,
@@ -78,7 +97,7 @@ export async function jobsRoutes(app: FastifyInstance) {
   app.patch("/jobs/:id", async (request) => {
     const { id } = request.params as { id: string };
     const body = updateJobSchema.parse(request.body);
-    return updateJob(request.user!.id, id, body);
+    return updateJob(request.user!.id, id, body as Parameters<typeof updateJob>[2]);
   });
 
   app.delete("/jobs/:id", async (request) => {

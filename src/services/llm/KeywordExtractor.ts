@@ -1,26 +1,45 @@
+import type { StructuredKeyword } from "../../lib/keywords.js";
+
 export interface KeywordExtractor {
   extract(input: {
     qualifications: string;
     preferences: string;
-  }): Promise<string[]>;
+  }): Promise<StructuredKeyword[]>;
 }
 
-const SYSTEM_PROMPT =
-  "Extract competency keywords from job qualifications and preferences. Return JSON array of strings only, max 30 items, each max 15 Korean chars or 20 English chars.";
+const SYSTEM_PROMPT = `Extract competency keywords from job qualifications and preferences.
+Return JSON array of objects with fields:
+- text: keyword string (max 15 Korean chars or 20 English chars)
+- source_section: one of "자격요건", "우대사항", "기타"
+- order: number starting from 0 within each section
+- source: always "llm"
+Max 30 items total.`;
+
+function stubSection(text: string, section: "자격요건" | "우대사항") {
+  return text
+    .split(/[,·\n/|]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && t.length <= 20)
+    .map((textValue, order) => ({
+      text: textValue,
+      source_section: section,
+      order,
+      source: "llm" as const,
+    }));
+}
 
 export class StubKeywordExtractor implements KeywordExtractor {
   async extract(input: {
     qualifications: string;
     preferences: string;
-  }): Promise<string[]> {
-    const text = `${input.qualifications} ${input.preferences}`;
-    const tokens = text
-      .split(/[,·\n/|]+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length >= 2 && t.length <= 20);
-
-    const unique = [...new Set(tokens)];
-    return unique.slice(0, 10);
+  }): Promise<StructuredKeyword[]> {
+    const qual = stubSection(input.qualifications, "자격요건");
+    const pref = stubSection(input.preferences, "우대사항");
+    const unique = new Map<string, StructuredKeyword>();
+    for (const kw of [...qual, ...pref]) {
+      if (!unique.has(kw.text)) unique.set(kw.text, kw);
+    }
+    return [...unique.values()].slice(0, 10);
   }
 }
 
@@ -34,7 +53,7 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
   async extract(input: {
     qualifications: string;
     preferences: string;
-  }): Promise<string[]> {
+  }): Promise<StructuredKeyword[]> {
     if (!this.apiKey) return new StubKeywordExtractor().extract(input);
 
     const userContent = `자격 요건: ${input.qualifications}\n우대 사항: ${input.preferences}`;
@@ -56,7 +75,7 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
   private async requestKeywords(
     model: string,
     userContent: string
-  ): Promise<string[] | null> {
+  ): Promise<StructuredKeyword[] | null> {
     try {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -83,8 +102,8 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
         choices?: { message?: { content?: string } }[];
       };
       const content = data.choices?.[0]?.message?.content ?? "[]";
-      const parsed = JSON.parse(content) as string[];
-      return normalizeKeywords(parsed);
+      const parsed = JSON.parse(content) as unknown;
+      return normalizeStructuredKeywordsFromUnknown(parsed);
     } catch (err) {
       console.warn(`LLM request error for model ${model}:`, err);
       return null;
@@ -105,10 +124,56 @@ export function createKeywordExtractor(): KeywordExtractor {
   return new StubKeywordExtractor();
 }
 
-export function normalizeKeywords(keywords: string[]): string[] {
+export function normalizeStructuredKeywordsFromUnknown(
+  value: unknown
+): StructuredKeyword[] {
+  if (!Array.isArray(value)) return [];
+
+  const result: StructuredKeyword[] = [];
+  for (const [index, item] of value.entries()) {
+    if (typeof item === "string") {
+      const text = item.trim();
+      if (!text) continue;
+      result.push({
+        text: text.slice(0, 20),
+        source_section: "기타",
+        order: index,
+        source: "llm",
+      });
+      continue;
+    }
+
+    if (item && typeof item === "object" && "text" in item) {
+      const raw = item as Partial<StructuredKeyword>;
+      const text = String(raw.text ?? "").trim();
+      if (!text) continue;
+      const section = raw.source_section;
+      const sourceSection =
+        section === "자격요건" || section === "우대사항" || section === "기타"
+          ? section
+          : "기타";
+      result.push({
+        text: text.slice(0, 20),
+        source_section: sourceSection,
+        order: typeof raw.order === "number" ? raw.order : index,
+        source: raw.source === "user" ? "user" : "llm",
+      });
+    }
+  }
+
+  return result.slice(0, 30);
+}
+
+export function normalizeKeywords(keywords: string[]): StructuredKeyword[] {
   return keywords
     .map((k) => k.trim())
     .filter(Boolean)
     .filter((k) => k.length <= 20)
-    .slice(0, 30);
+    .slice(0, 30)
+    .map((text, order) => ({
+      text,
+      source_section: "기타" as const,
+      order,
+      source: "user" as const,
+    }));
 }

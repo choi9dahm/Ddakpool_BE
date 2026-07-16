@@ -5,6 +5,7 @@ import { capturePostHog } from "../lib/posthog.js";
 export type AnalyticsEventName =
   | "url_submitted"
   | "parse_result"
+  | "folder_assigned"
   | "tag_assigned"
   | "save_success";
 
@@ -30,7 +31,7 @@ export async function logEvent(
 export async function getKpiSummary(userId: string) {
   if (!isSupabaseConfigured()) {
     const allJobs = devListJobs(userId, {});
-    const tagged = allJobs.filter((j) => j.purpose_tag).length;
+    const tagged = allJobs.filter((j) => j.folder_id).length;
     return {
       parseSuccessRate: 0,
       totalParses: 0,
@@ -57,7 +58,11 @@ export async function getKpiSummary(userId: string) {
   ).length;
 
   const saveSuccess = events?.filter((e) => e.event_name === "save_success").length ?? 0;
-  const tagAssigned = events?.filter((e) => e.event_name === "tag_assigned").length ?? 0;
+  const folderAssigned =
+    events?.filter(
+      (e) =>
+        e.event_name === "folder_assigned" || e.event_name === "tag_assigned"
+    ).length ?? 0;
 
   const { count: jobCount } = await supabaseAdmin
     .from("job_postings")
@@ -68,13 +73,13 @@ export async function getKpiSummary(userId: string) {
     .from("job_postings")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
-    .not("purpose_tag", "is", null);
+    .not("folder_id", "is", null);
 
   return {
     parseSuccessRate: totalParses > 0 ? successCount / totalParses : 0,
     totalParses,
     saveSuccessCount: saveSuccess,
-    tagAssignedEvents: tagAssigned,
+    tagAssignedEvents: folderAssigned,
     totalJobs: jobCount ?? 0,
     taggedJobs: taggedJobs.count ?? 0,
     tagSettingRate: jobCount ? (taggedJobs.count ?? 0) / jobCount : 0,

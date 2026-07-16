@@ -51,7 +51,11 @@ export async function getProfile(userId: string) {
 
 export async function updateProfile(
   userId: string,
-  updates: { nickname?: string; avatar_url?: string }
+  updates: {
+    nickname?: string;
+    avatar_url?: string;
+    onboarding_completed_at?: string | null;
+  }
 ) {
   if (!isSupabaseConfigured()) {
     return devUpdateProfile(userId, updates);

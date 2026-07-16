@@ -16,6 +16,10 @@ const nicknameSchema = z.object({
     .regex(/^[가-힣a-zA-Z0-9]+$/),
 });
 
+const onboardingSchema = z.object({
+  completed: z.boolean(),
+});
+
 export async function profileRoutes(app: FastifyInstance) {
   app.get("/profile", async (request) => {
     return getProfile(request.user!.id);
@@ -24,6 +28,13 @@ export async function profileRoutes(app: FastifyInstance) {
   app.patch("/profile", async (request) => {
     const body = nicknameSchema.parse(request.body);
     return updateProfile(request.user!.id, { nickname: body.nickname });
+  });
+
+  app.patch("/profile/onboarding", async (request) => {
+    const body = onboardingSchema.parse(request.body);
+    return updateProfile(request.user!.id, {
+      onboarding_completed_at: body.completed ? new Date().toISOString() : null,
+    });
   });
 
   app.post("/profile/avatar", async (request, reply) => {
