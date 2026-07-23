@@ -65,10 +65,39 @@ function resolveIframeUrl(src: string): string {
   return `${SARAMIN_ORIGIN}/${src}`;
 }
 
+function resolveImageUrl(src: string): string {
+  const trimmed = src.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("http")) return trimmed;
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (trimmed.startsWith("/")) return `${SARAMIN_ORIGIN}${trimmed}`;
+  return trimmed;
+}
+
 function extractDetailIframeUrl(ajaxHtml: string): string | null {
   const $ = cheerio.load(ajaxHtml);
   const src = $("iframe#iframe_content_0, iframe.iframe_content").first().attr("src");
   return src ? resolveIframeUrl(src) : null;
+}
+
+/** 이미지형 공고의 SEO용 숨김 텍스트(display:none / 0px)는 본문으로 보지 않는다. */
+function removeHiddenSeoNodes(
+  $: cheerio.CheerioAPI,
+  scope: ReturnType<cheerio.CheerioAPI>
+) {
+  scope.find("*").each((_, el) => {
+    const style = (($(el).attr("style") ?? "") + "").toLowerCase().replace(/\s+/g, "");
+    if (
+      style.includes("display:none") ||
+      style.includes("visibility:hidden") ||
+      (style.includes("overflow:hidden") &&
+        (style.includes("height:0") ||
+          style.includes("fontsize:0") ||
+          style.includes("linewidth:0")))
+    ) {
+      $(el).remove();
+    }
+  });
 }
 
 function extractUserContent(html: string): SaraminDetailBody {
@@ -80,11 +109,20 @@ function extractUserContent(html: string): SaraminDetailBody {
 
   const imageUrls: string[] = [];
   scope.find("img").each((_, el) => {
-    const src = $(el).attr("src") || $(el).attr("data-src") || "";
+    const raw =
+      $(el).attr("src") ||
+      $(el).attr("data-src") ||
+      $(el).attr("data-original") ||
+      $(el).attr("data-lazy-src") ||
+      "";
+    const src = resolveImageUrl(raw);
     if (/^https?:/.test(src) && !imageUrls.includes(src)) {
       imageUrls.push(src);
     }
   });
+
+  // 이미지 URL은 유지한 뒤, 숨김 SEO 텍스트만 제거한다.
+  removeHiddenSeoNodes($, scope);
 
   scope.find("br").replaceWith("\n");
   scope.find("p, div, li, tr, h1, h2, h3, h4, h5, h6").each((_, el) => {

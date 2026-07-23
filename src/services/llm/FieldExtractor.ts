@@ -18,7 +18,9 @@ const SYSTEM_PROMPT = [
   "- deadline_date: 마감일을 YYYY-MM-DD로. 마감일이 없거나 상시/수시채용이면 null.",
   "- required_documents: 제출/접수 서류.",
   "- application_method: 지원/접수 방법.",
-  "- is_image_based: true if the posting body is primarily images/screenshots with little extractable text (이미지형 채용공고). Otherwise false.",
+  "- is_image_based: true if the posting body is primarily images/screenshots with little extractable text (이미지형 채용공고).",
+  "  Strong signals: '[상세요강 이미지]' section present, body is mostly image URLs (.png/.jpg), or detail text is only short SEO keywords while the real JD is an image.",
+  "  Otherwise false.",
   "Preserve bullet points and line breaks within list-like fields. Use an empty string for any field not present in the text.",
 ].join("\n");
 
@@ -170,17 +172,37 @@ function normalizeExtractedFields(
   };
 }
 
-/** 휴리스틱: 본문이 거의 없고 이미지 URL/플레이스홀더가 많으면 이미지형으로 본다. */
+/** 휴리스틱: 상세요강이 이미지 중심이면 이미지형으로 본다. */
 export function detectImageBasedHeuristic(rawText: string): boolean {
   const trimmed = rawText.trim();
   if (!trimmed) return false;
-  const imageUrls =
-    trimmed.match(/https?:\/\/\S+\.(?:png|jpe?g|gif|webp)/gi) ?? [];
-  const withoutUrls = trimmed.replace(/https?:\/\/\S+/gi, "").trim();
-  if (imageUrls.length >= 2 && withoutUrls.length < 200) return true;
+
   if (/\[이미지\]|이미지형|캡처\s*이미지|본문이\s*이미지/i.test(trimmed)) {
     return true;
   }
+
+  const imageUrls =
+    trimmed.match(/(?:https?:)?\/\/\S+\.(?:png|jpe?g|gif|webp)/gi) ?? [];
+  const hasImageSection = /\[상세요강 이미지\]/i.test(trimmed);
+
+  // 파서가 상세요강 이미지를 분리해 둔 경우: 상세 텍스트가 짧으면 이미지형
+  if (hasImageSection) {
+    const detailMatch = trimmed.match(
+      /\[상세요강\]\n([\s\S]*?)(?=\n\[|$)/
+    );
+    const detailText = (detailMatch?.[1] ?? "").trim();
+    if (detailText.length < 400) return true;
+    if (imageUrls.length >= 1 && detailText.length < 800) return true;
+  }
+
+  // 이미지 URL은 있는데 본문 텍스트가 거의 없는 경우
+  const withoutUrls = trimmed
+    .replace(/(?:https?:)?\/\/\S+/gi, "")
+    .replace(/\[상세요강 이미지\]/gi, "")
+    .trim();
+  if (imageUrls.length >= 1 && withoutUrls.length < 250) return true;
+  if (imageUrls.length >= 2 && withoutUrls.length < 500) return true;
+
   return false;
 }
 
