@@ -18,6 +18,7 @@ const SYSTEM_PROMPT = [
   "- deadline_date: 마감일을 YYYY-MM-DD로. 마감일이 없거나 상시/수시채용이면 null.",
   "- required_documents: 제출/접수 서류.",
   "- application_method: 지원/접수 방법.",
+  "- is_image_based: true if the posting body is primarily images/screenshots with little extractable text (이미지형 채용공고). Otherwise false.",
   "Preserve bullet points and line breaks within list-like fields. Use an empty string for any field not present in the text.",
 ].join("\n");
 
@@ -36,6 +37,7 @@ const FIELD_SCHEMA = {
     deadline_date: { type: ["string", "null"] },
     required_documents: { type: "string" },
     application_method: { type: "string" },
+    is_image_based: { type: "boolean" },
   },
   required: [
     "company_name",
@@ -49,15 +51,20 @@ const FIELD_SCHEMA = {
     "deadline_date",
     "required_documents",
     "application_method",
+    "is_image_based",
   ],
 } as const;
 
+export interface ExtractedJobFields extends ParsedFields {
+  is_image_based: boolean;
+}
+
 export interface FieldExtractor {
-  extract(rawText: string): Promise<ParsedFields | null>;
+  extract(rawText: string): Promise<ExtractedJobFields | null>;
 }
 
 export class StubFieldExtractor implements FieldExtractor {
-  async extract(): Promise<ParsedFields | null> {
+  async extract(): Promise<ExtractedJobFields | null> {
     return null;
   }
 }
@@ -69,7 +76,7 @@ export class OpenAIFieldExtractor implements FieldExtractor {
     private fallbackModel: string
   ) {}
 
-  async extract(rawText: string): Promise<ParsedFields | null> {
+  async extract(rawText: string): Promise<ExtractedJobFields | null> {
     const trimmed = rawText.trim().slice(0, MAX_INPUT_CHARS);
     if (!trimmed) return null;
 
@@ -87,7 +94,7 @@ export class OpenAIFieldExtractor implements FieldExtractor {
   private async requestFields(
     model: string,
     rawText: string
-  ): Promise<ParsedFields | null> {
+  ): Promise<ExtractedJobFields | null> {
     try {
       const response = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -127,7 +134,9 @@ export class OpenAIFieldExtractor implements FieldExtractor {
       const content = data.choices?.[0]?.message?.content;
       if (!content) return null;
 
-      const parsed = JSON.parse(content) as Omit<ParsedFields, "raw_text">;
+      const parsed = JSON.parse(content) as Omit<ParsedFields, "raw_text"> & {
+        is_image_based?: boolean;
+      };
       return normalizeExtractedFields(parsed, rawText);
     } catch (err) {
       console.warn(`FieldExtractor error for ${model}:`, err);
@@ -137,9 +146,9 @@ export class OpenAIFieldExtractor implements FieldExtractor {
 }
 
 function normalizeExtractedFields(
-  parsed: Omit<ParsedFields, "raw_text">,
+  parsed: Omit<ParsedFields, "raw_text"> & { is_image_based?: boolean },
   rawText: string
-): ParsedFields {
+): ExtractedJobFields {
   return {
     company_name: String(parsed.company_name ?? "").trim(),
     job_title: String(parsed.job_title ?? "").trim(),
@@ -157,7 +166,22 @@ function normalizeExtractedFields(
     required_documents: String(parsed.required_documents ?? "").trim(),
     application_method: String(parsed.application_method ?? "").trim(),
     raw_text: rawText,
+    is_image_based: Boolean(parsed.is_image_based),
   };
+}
+
+/** 휴리스틱: 본문이 거의 없고 이미지 URL/플레이스홀더가 많으면 이미지형으로 본다. */
+export function detectImageBasedHeuristic(rawText: string): boolean {
+  const trimmed = rawText.trim();
+  if (!trimmed) return false;
+  const imageUrls =
+    trimmed.match(/https?:\/\/\S+\.(?:png|jpe?g|gif|webp)/gi) ?? [];
+  const withoutUrls = trimmed.replace(/https?:\/\/\S+/gi, "").trim();
+  if (imageUrls.length >= 2 && withoutUrls.length < 200) return true;
+  if (/\[이미지\]|이미지형|캡처\s*이미지|본문이\s*이미지/i.test(trimmed)) {
+    return true;
+  }
+  return false;
 }
 
 export function createFieldExtractor(): FieldExtractor {
@@ -184,7 +208,7 @@ export function createFieldExtractor(): FieldExtractor {
  */
 export function mergeLlmFields(
   base: ParsedFields,
-  extracted: ParsedFields
+  extracted: ExtractedJobFields
 ): ParsedFields {
   const merged = { ...base };
 
@@ -215,6 +239,14 @@ export function mergeLlmFields(
   merged.recruitment_field = merged.job_title;
 
   return merged;
+}
+
+export function resolveIsImageBased(
+  rawText: string,
+  extracted: ExtractedJobFields | null
+): boolean {
+  if (extracted?.is_image_based) return true;
+  return detectImageBasedHeuristic(rawText);
 }
 
 export function mergeParsedFields(

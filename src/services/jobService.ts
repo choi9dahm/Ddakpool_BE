@@ -18,6 +18,7 @@ import {
 import {
   createFieldExtractor,
   mergeLlmFields,
+  resolveIsImageBased,
 } from "./llm/FieldExtractor.js";
 import { fetchAndParse, classifyParseResult } from "./parser/index.js";
 import { validateJobUrl } from "./parser/urlValidator.js";
@@ -65,6 +66,7 @@ export interface JobPostingRow {
   raw_text: string;
   memo: string;
   competency_keywords: StructuredKeyword[];
+  is_image_based: boolean;
   saved_at: string;
   updated_at: string;
   job_posting_images?: { id: string; storage_path: string; sort_order: number }[];
@@ -95,7 +97,27 @@ function normalizeJobRow(row: Record<string, unknown>): JobPostingRow {
     competency_keywords: parseStructuredKeywords(row.competency_keywords),
     deadline_status: (row.deadline_status as DeadlineStatus) ?? null,
     folder_id: (row.folder_id as string | null) ?? null,
+    is_image_based: Boolean(row.is_image_based),
   };
+}
+
+function deadlineRank(
+  job: JobPostingRow,
+  sort: "deadline_asc" | "deadline_desc"
+): number {
+  // Expired jobs are handled separately; ranks apply to active jobs only.
+  // asc: d-day imminent (earlier date) first, then always_open last among active
+  // desc: always_open first, then later dates
+  const isAlways = job.deadline_status === "always_open";
+  if (sort === "deadline_asc") {
+    if (isAlways) return Number.MAX_SAFE_INTEGER - 1;
+    if (!job.deadline_date) return Number.MAX_SAFE_INTEGER - 2;
+    return new Date(job.deadline_date).getTime();
+  }
+  // deadline_desc
+  if (isAlways) return Number.MIN_SAFE_INTEGER;
+  if (!job.deadline_date) return Number.MIN_SAFE_INTEGER + 1;
+  return -new Date(job.deadline_date).getTime();
 }
 
 export function sortJobs(
@@ -104,16 +126,15 @@ export function sortJobs(
 ): JobPostingRow[] {
   const copy = [...jobs];
 
-  if (sort.startsWith("deadline")) {
+  if (sort === "deadline_asc" || sort === "deadline_desc") {
     const active = copy.filter((j) => !isExpired(j));
     const expired = copy.filter((j) => isExpired(j));
 
     const sortFn = (a: JobPostingRow, b: JobPostingRow) => {
-      const da = a.deadline_date ?? "9999-12-31";
-      const db = b.deadline_date ?? "9999-12-31";
-      return sort === "deadline_asc"
-        ? da.localeCompare(db)
-        : db.localeCompare(da);
+      const ra = deadlineRank(a, sort);
+      const rb = deadlineRank(b, sort);
+      if (ra !== rb) return ra - rb;
+      return a.saved_at.localeCompare(b.saved_at);
     };
 
     active.sort(sortFn);
@@ -144,6 +165,41 @@ export function sortJobs(
   return copy;
 }
 
+async function assertUniqueSourceUrl(userId: string, sourceUrl: string) {
+  if (!isSupabaseConfigured()) {
+    const existing = devListJobs(userId, {}).find(
+      (j) => j.source_url === sourceUrl
+    );
+    if (existing) {
+      throw new AppError(
+        409,
+        "이미 저장된 공고입니다.",
+        "duplicate_url"
+      );
+    }
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("job_postings")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("source_url", sourceUrl)
+    .maybeSingle();
+
+  if (error) {
+    throw new AppError(500, "공고 조회에 실패했습니다.", "lookup_failed");
+  }
+
+  if (data) {
+    throw new AppError(
+      409,
+      "이미 저장된 공고입니다.",
+      "duplicate_url"
+    );
+  }
+}
+
 export async function parseAndCreateJob(
   userId: string,
   urlInput: string,
@@ -153,6 +209,8 @@ export async function parseAndCreateJob(
   if (!validation.valid) {
     throw new AppError(400, validation.message, validation.code);
   }
+
+  await assertUniqueSourceUrl(userId, validation.normalizedUrl);
 
   const resolvedFolderId = await validateFolderId(userId, folderId);
 
@@ -170,6 +228,7 @@ export async function parseAndCreateJob(
 
   let fields = parsedFields;
   let classification = classifyParseResult(fields, fetchFailed);
+  let isImageBased = detectImageBasedFromFields(fields);
 
   if (!fetchFailed && fields.raw_text.trim()) {
     const fieldExtractor = createFieldExtractor();
@@ -177,6 +236,9 @@ export async function parseAndCreateJob(
     if (extracted) {
       fields = mergeLlmFields(fields, extracted);
       classification = classifyParseResult(fields, false);
+      isImageBased = resolveIsImageBased(fields.raw_text, extracted);
+    } else {
+      isImageBased = resolveIsImageBased(fields.raw_text, null);
     }
   }
 
@@ -195,7 +257,7 @@ export async function parseAndCreateJob(
   const extractor = createKeywordExtractor();
 
   let keywords: StructuredKeyword[] = [];
-  if (classification.status !== "fail") {
+  if (classification.status !== "fail" && !isImageBased) {
     keywords = await extractor.extract({
       qualifications: fields.qualifications,
       preferences: fields.preferences,
@@ -226,8 +288,13 @@ export async function parseAndCreateJob(
       raw_text: fields.raw_text,
       memo: "",
       competency_keywords: keywords,
+      is_image_based: isImageBased,
     });
-    return { job, parseResult: classification.status };
+    return {
+      job,
+      parseResult: classification.status,
+      is_image_based: isImageBased,
+    };
   }
 
   const { data, error } = await supabaseAdmin
@@ -253,11 +320,19 @@ export async function parseAndCreateJob(
       application_method: fields.application_method,
       raw_text: fields.raw_text,
       competency_keywords: keywords,
+      is_image_based: isImageBased,
     })
     .select()
     .single();
 
   if (error) {
+    if (error.code === "23505") {
+      throw new AppError(
+        409,
+        "이미 저장된 공고입니다.",
+        "duplicate_url"
+      );
+    }
     throw new AppError(500, "공고 저장에 실패했습니다.", "save_failed");
   }
 
@@ -266,9 +341,20 @@ export async function parseAndCreateJob(
     platform: validation.platform,
     job_id: data.id,
     folder_id: resolvedFolderId,
+    is_image_based: isImageBased,
   });
 
-  return { job: normalizeJobRow(data), parseResult: classification.status };
+  return {
+    job: normalizeJobRow(data),
+    parseResult: classification.status,
+    is_image_based: isImageBased,
+  };
+}
+
+function detectImageBasedFromFields(fields: {
+  raw_text: string;
+}): boolean {
+  return resolveIsImageBased(fields.raw_text, null);
 }
 
 export async function listJobs(
