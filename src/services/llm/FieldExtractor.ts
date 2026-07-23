@@ -10,11 +10,11 @@ const SYSTEM_PROMPT = [
   "- company_name: 채용하는 회사명.",
   "- job_title: 공고 제목.",
   "- recruitment_field: 모집 직무/부문 (예: 'RM 부정거래 모니터링 어시스턴트').",
-  "- job_description: '주요업무/담당업무/직무 내용'에 해당하는 내용만. 회사소개, 자격요건, 우대사항, 복리후생, 근무조건, 근무지, 근무시간, 채용절차, 접수방법, 제출서류, 유의사항은 절대 포함하지 말 것.",
+  "- job_description: '주요업무/담당업무/직무 내용'에 해당하는 내용만. 회사소개, 슬로건(WE ARE 등), 인재상, 자격요건, 우대사항, 복리후생, 근무조건, 근무지, 근무시간, 채용절차, 접수방법, 제출서류, 유의사항은 절대 포함하지 말 것. 담당업무 섹션만 잘라 넣고, 그 앞뒤 전체 본문을 넣지 말 것.",
   "- qualifications: 자격요건/지원자격 등 지원에 필요한 '필수' 요건만.",
   "- preferences: '우대', '~하면 우대' 처럼 우대 조건으로 명시된 지원자 자격만. 근무제도/근무형태/근무시간/복리후생/급여는 여기에 넣지 말 것(해당 없으면 빈 문자열).",
   "- industry: 업종.",
-  "- deadline_raw: '마감일/접수 마감일'의 원문. 상시채용/수시채용이면 정확히 '상시채용'. 시작일/등록일/게시일은 넣지 말 것. 없으면 빈 문자열.",
+  "- deadline_raw: '마감일/접수 마감일'의 원문. 상시채용/수시채용/'상시 채용중'/'~ 상시'이면 정확히 '상시채용'. '채용시 마감'은 상시채용이 아니므로 빈 문자열. 시작일/등록일/게시일은 넣지 말 것. 없으면 빈 문자열.",
   "- deadline_date: 마감일을 YYYY-MM-DD로. 마감일이 없거나 상시/수시채용이면 null.",
   "- required_documents: 제출/접수 서류.",
   "- application_method: 지원/접수 방법.",
@@ -156,7 +156,9 @@ function normalizeExtractedFields(
     job_title: String(parsed.job_title ?? "").trim(),
     // 모집 분야는 항상 파싱된 직무명과 동일한 값을 사용한다. (JD-DP-INS-01 / JD-DP-03)
     recruitment_field: String(parsed.job_title ?? "").trim(),
-    job_description: String(parsed.job_description ?? "").trim(),
+    job_description: sanitizeJobDescription(
+      String(parsed.job_description ?? "").trim()
+    ),
     qualifications: String(parsed.qualifications ?? "").trim(),
     preferences: String(parsed.preferences ?? "").trim(),
     industry: String(parsed.industry ?? "").trim(),
@@ -170,6 +172,39 @@ function normalizeExtractedFields(
     raw_text: rawText,
     is_image_based: Boolean(parsed.is_image_based),
   };
+}
+
+/**
+ * 담당업무에 회사소개·자격요건 등 타 섹션이 섞여 들어오면 잘라낸다.
+ * (예: WE ARE ~ 인재상까지 통째로 들어오는 사람인 케이스)
+ */
+function sanitizeJobDescription(desc: string): string {
+  if (!desc) return "";
+  let text = desc;
+
+  // '담당업무/주요업무' 헤더가 있으면 그 이후만 사용
+  const dutyHeader = text.match(
+    /(?:^|\n)\s*(?:담당\s*업무|주요\s*업무|직무\s*내용|Job\s*Description)\s*[:：]?\s*\n([\s\S]+)/i
+  );
+  if (dutyHeader?.[1]) {
+    text = dutyHeader[1].trim();
+  }
+
+  // 뒤따르는 타 섹션에서 절단
+  const cut = text.search(
+    /\n\s*(?:자격\s*요건|지원\s*자격|우대\s*사항|우대\s*조건|복리\s*후생|채용\s*절차|전형\s*절차|근무\s*조건|근무\s*환경|인재상|회사\s*소개|복지|Benefits|Requirements|Qualifications|WE\s*ARE|우리는)\b/i
+  );
+  if (cut > 40) {
+    text = text.slice(0, cut).trim();
+  }
+
+  // 앞부분에 회사 슬로건/소개가 길게 붙어 있으면 담당업무 불릿부터 시작하도록 보정
+  if (/WE\s*ARE|어메스는|인재를 기다리/i.test(text) && /[•·▪‣-]/.test(text)) {
+    const bullet = text.search(/(?:^|\n)\s*[•·▪‣\-]/m);
+    if (bullet > 0) text = text.slice(bullet).trim();
+  }
+
+  return text.trim();
 }
 
 /** 휴리스틱: 상세요강이 이미지 중심이면 이미지형으로 본다. */

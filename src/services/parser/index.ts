@@ -13,6 +13,7 @@ import {
   hasJobkoreaDetailContent,
   parseJobkoreaDetail,
 } from "./jobkoreaDetail.js";
+import { normalizeDeadlineRaw } from "../../lib/deadlineStatus.js";
 
 export interface ParsedFields {
   company_name: string;
@@ -73,14 +74,6 @@ function parseDeadline(raw: string): string | null {
   if (!match) return null;
   const [, y, m, d] = match;
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-}
-
-// 상시/수시채용은 신호값 "상시채용"으로 남기고, 저장 직전에 status로 변환한다.
-function normalizeDeadlineRaw(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
-  if (/상시|수시|채용\s*시|충원\s*시/.test(trimmed)) return "상시채용";
-  return trimmed;
 }
 
 export async function parseSaramin(

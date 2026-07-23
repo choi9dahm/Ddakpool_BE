@@ -1,5 +1,9 @@
 import * as cheerio from "cheerio";
 import type { ParsedFields } from "./index.js";
+import {
+  isAlwaysOpenDeadline,
+  normalizeDeadlineRaw,
+} from "../../lib/deadlineStatus.js";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -60,16 +64,27 @@ function parseDeadline(raw: string): string | null {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
-// 상시/수시채용은 신호값 "상시채용"으로 남기고, 저장 직전에 status로 변환한다.
-function isRecurringDeadline(raw: string): boolean {
-  return /상시|수시|채용\s*시|충원\s*시|채용시\s*마감/.test(raw);
-}
-
-function normalizeDeadlineRaw(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
-  if (isRecurringDeadline(trimmed)) return "상시채용";
-  return trimmed;
+/**
+ * 잡코리아는 상시채용에도 JSON-LD validThrough에 임의(먼 미래) 날짜를 넣는 경우가 많다.
+ * UI/메타의 '마감일 : 상시채용', closeDisplayText, 제목의 상시/수시 신호를 우선한다.
+ */
+function extractJobkoreaAlwaysOpenSignal(
+  html: string,
+  jobTitle: string,
+  detailText: string
+): boolean {
+  if (isAlwaysOpenDeadline(jobTitle)) return true;
+  if (/마감일\s*[:：]\s*상시채용/.test(html)) return true;
+  if (/closeDisplayText[^a-zA-Z0-9]{0,12}상시채용/.test(html)) return true;
+  if (/closeDisplayText[^a-zA-Z0-9]{0,12}수시채용/.test(html)) return true;
+  // 본문에 상시 채용 Pool 등 명시 + 제목에 수시/상시
+  if (
+    isAlwaysOpenDeadline(detailText.slice(0, 1500)) &&
+    /상시\s*채용|수시\s*채용|상시채용|수시채용/.test(jobTitle + detailText.slice(0, 800))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function firstString(value: unknown): string {
@@ -104,7 +119,10 @@ function findJobPosting(node: unknown): Record<string, unknown> | null {
 }
 
 /** 메인 GI_Read 페이지의 schema.org JobPosting JSON-LD에서 메타데이터를 추출한다. */
-export function parseJobkoreaJsonLd(html: string): JobkoreaMeta {
+export function parseJobkoreaJsonLd(
+  html: string,
+  detailText = ""
+): JobkoreaMeta {
   const $ = cheerio.load(html);
   let posting: Record<string, unknown> | null = null;
 
@@ -138,10 +156,16 @@ export function parseJobkoreaJsonLd(html: string): JobkoreaMeta {
   const company_name = org ? firstString(org.name) : "";
 
   const validThrough = firstString(p.validThrough);
-  const deadline_date = parseDeadline(validThrough);
-  const deadline_raw = normalizeDeadlineRaw(
+  let deadline_date = parseDeadline(validThrough);
+  let deadline_raw = normalizeDeadlineRaw(
     deadline_date ? deadline_date.replace(/-/g, ".") : validThrough
   );
+
+  // 상시/수시 신호가 있으면 JSON-LD 임의 날짜를 버린다.
+  if (extractJobkoreaAlwaysOpenSignal(html, job_title, detailText)) {
+    deadline_raw = "상시채용";
+    deadline_date = null;
+  }
 
   let location = "";
   const jobLocation = p.jobLocation as Record<string, unknown> | undefined;
@@ -278,7 +302,7 @@ export function parseJobkoreaDetail(
   mainHtml: string,
   detailBody: JobkoreaDetailBody
 ): ParsedFields {
-  const meta = parseJobkoreaJsonLd(mainHtml);
+  const meta = parseJobkoreaJsonLd(mainHtml, detailBody.text ?? "");
 
   // 담당업무/자격요건/우대사항은 LLM이 raw_text(상세요강)에서 분류해 채운다.
   const baseFields = {

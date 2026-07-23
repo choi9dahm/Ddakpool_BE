@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { ParsedFields } from "./index.js";
+import { normalizeDeadlineRaw } from "../../lib/deadlineStatus.js";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -195,16 +196,13 @@ function parseDeadline(raw: string): string | null {
   return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
 }
 
-// 상시/수시채용은 신호값 "상시채용"으로 남기고, 저장 직전에 status로 변환한다.
-function isRecurringDeadline(raw: string): boolean {
-  return /상시|수시|채용\s*시|충원\s*시|채용시\s*마감/.test(raw);
-}
-
-function normalizeDeadlineRaw(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) return "";
-  if (isRecurringDeadline(trimmed)) return "상시채용";
-  return trimmed;
+/** 접수기간 문구에서 상시채용 신호만 추출. '채용시 마감'은 매핑하지 않음. */
+function extractAlwaysOpenFromHowto(howto: string): string {
+  const text = howto.replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/상시\s*채용중|상시채용|상시\s*채용/.test(text)) return "상시채용";
+  if (/~\s*상시\b|부터\s*상시|기간\s*[:：].*상시/.test(text)) return "상시채용";
+  return "";
 }
 
 function cleanDetailText(text: string): string {
@@ -293,7 +291,18 @@ export function parseSaraminDetail(
   const qualifications = cleanDetailText(getDtDdValue($, "자격요건"));
   const preferences = cleanDetailText(getDtDdValue($, "우대사항"));
   const industry = cleanDetailText(getDtDdValue($, "업종"));
-  const deadline_raw = normalizeDeadlineRaw(getDtDdValue($, "마감일"));
+  let deadline_raw = normalizeDeadlineRaw(getDtDdValue($, "마감일"));
+  // 마감일 dt가 비어 있으면 접수기간 안내 문구의 상시 신호를 본다.
+  if (!deadline_raw) {
+    const howto = extractSectionText($, "접수기간 및 방법");
+    deadline_raw = normalizeDeadlineRaw(extractAlwaysOpenFromHowto(howto));
+  }
+  // 본문(상세요강)에 '26.07.01 ~ 상시' 형태가 있는 경우도 보완
+  if (!deadline_raw && detailBody?.text) {
+    deadline_raw = normalizeDeadlineRaw(
+      extractAlwaysOpenFromHowto(detailBody.text.slice(0, 500))
+    );
+  }
   const application_method = getDtDdValue($, "지원방법");
   const required_documents = cleanDetailText(getDtDdValue($, "접수양식"));
 
@@ -311,7 +320,7 @@ export function parseSaraminDetail(
     preferences,
     industry,
     deadline_raw,
-    deadline_date: parseDeadline(deadline_raw),
+    deadline_date: deadline_raw === "상시채용" ? null : parseDeadline(deadline_raw),
     required_documents,
     application_method,
   };
