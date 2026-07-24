@@ -63,12 +63,12 @@ export async function ensureDefaultFolders(userId: string): Promise<FolderRow[]>
   }
 
   const existing = await listFolders(userId);
-  const usedSlots = new Set(existing.map((f) => f.slot));
-  const missing = DEFAULT_FOLDER_SEEDS.filter((seed) => !usedSlots.has(seed.slot));
-  if (missing.length === 0) return existing;
+  // 기본 폴더도 삭제 가능(JD-FOL-M04). 이미 폴더가 있으면 재시드하지 않는다.
+  // 시드는 가입 직후·폴더가 0개인 최초 상태만.
+  if (existing.length > 0) return existing;
 
   const { error } = await supabaseAdmin.from("folders").insert(
-    missing.map((seed) => ({
+    DEFAULT_FOLDER_SEEDS.map((seed) => ({
       user_id: userId,
       name: seed.name,
       slot: seed.slot,

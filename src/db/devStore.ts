@@ -81,10 +81,10 @@ function userFolders(userId: string) {
 
 export function devEnsureDefaultFolders(userId: string): FolderRow[] {
   const existing = userFolders(userId);
-  const usedSlots = new Set(existing.map((f) => f.slot));
+  // 기본 폴더도 삭제 가능. 폴더가 0개일 때만 시드한다.
+  if (existing.length > 0) return existing;
 
   for (const seed of DEFAULT_FOLDER_SEEDS) {
-    if (usedSlots.has(seed.slot)) continue;
     const id = randomUUID();
     const timestamp = now();
     folders.set(id, {
