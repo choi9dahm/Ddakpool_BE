@@ -55,11 +55,21 @@ export function validateJobUrl(input: string): UrlValidationResult | UrlValidati
     };
   }
 
-  if (host.includes("saramin.co.kr")) {
+  // 사람인 본도메인 + 단축 링크(saram.in)
+  if (
+    host === "saram.in" ||
+    host.endsWith(".saram.in") ||
+    host.includes("saramin.co.kr")
+  ) {
     return { valid: true, platform: "saramin", normalizedUrl: url.toString() };
   }
 
-  if (host.includes("jobkorea.co.kr")) {
+  // 잡코리아 본도메인 + 단축 링크(joburl.kr)
+  if (
+    host === "joburl.kr" ||
+    host.endsWith(".joburl.kr") ||
+    host.includes("jobkorea.co.kr")
+  ) {
     return { valid: true, platform: "jobkorea", normalizedUrl: url.toString() };
   }
 
