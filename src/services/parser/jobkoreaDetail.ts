@@ -57,6 +57,25 @@ export function extractJobkoreaGno(url: string): string | null {
   }
 }
 
+/**
+ * 앱 유도 페이지(app_down.asp?Gno=...)를 웹 공고 URL(GI_Read/{Gno})로 치환한다.
+ * HTTP 리다이렉트로는 본 공고로 넘어가지 않으므로 Gno로 직접 구성한다.
+ */
+export function resolveJobkoreaParseUrl(url: string): string {
+  const gno = extractJobkoreaGno(url);
+  if (!gno) return url;
+
+  try {
+    const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
+    const path = parsed.pathname.toLowerCase();
+    if (/\/gi_read(?:_[a-z]+)*\//i.test(path)) return url;
+    if (!path.includes("app_down")) return url;
+    return `${JOBKOREA_ORIGIN}/Recruit/GI_Read/${gno}`;
+  } catch {
+    return url;
+  }
+}
+
 function parseDeadline(raw: string): string | null {
   const match = raw.match(/(\d{4})[.\-/년\s]*(\d{1,2})[.\-/월\s]*(\d{1,2})/);
   if (!match) return null;

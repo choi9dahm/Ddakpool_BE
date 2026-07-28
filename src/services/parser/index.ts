@@ -12,6 +12,7 @@ import {
   fetchJobkoreaDetailBody,
   hasJobkoreaDetailContent,
   parseJobkoreaDetail,
+  resolveJobkoreaParseUrl,
 } from "./jobkoreaDetail.js";
 import { normalizeDeadlineRaw } from "../../lib/deadlineStatus.js";
 
@@ -164,7 +165,15 @@ export async function fetchAndParse(
 }> {
   const debug = process.env.PARSE_DEBUG === "true";
   const httpTimeout = Math.min(timeoutMs, 10000);
-  const resolvedUrl = await resolveRedirectUrl(url, httpTimeout);
+  // 잡코리아 앱 다운 링크는 리다이렉트되지 않으므로 Gno로 웹 공고 URL을 먼저 만든다.
+  const parseTargetUrl =
+    platform === "jobkorea" ? resolveJobkoreaParseUrl(url) : url;
+  if (debug && parseTargetUrl !== url) {
+    console.info(`[parse] jobkorea url rewritten: ${url} -> ${parseTargetUrl}`);
+  }
+  const resolvedUrl = resolveJobkoreaParseUrl(
+    await resolveRedirectUrl(parseTargetUrl, httpTimeout)
+  );
 
   if (platform === "saramin") {
     const saraminResult = await parseSaraminFromAjax(resolvedUrl, httpTimeout, debug);
@@ -290,13 +299,18 @@ async function parseJobkoreaFromPage(
   httpTimeout: number,
   debug: boolean
 ): Promise<{ fields: ParsedFields; fetchFailed: boolean } | null> {
-  const gno = extractJobkoreaGno(url);
+  const parseUrl = resolveJobkoreaParseUrl(url);
+  if (debug && parseUrl !== url) {
+    console.info(`[parse] jobkorea url rewritten: ${url} -> ${parseUrl}`);
+  }
+
+  const gno = extractJobkoreaGno(parseUrl);
   if (!gno) {
     if (debug) console.info("[parse] jobkorea: Gno not found in URL");
     return null;
   }
 
-  const mainResult = await fetchHtml(url, httpTimeout);
+  const mainResult = await fetchHtml(parseUrl, httpTimeout);
   if (mainResult.failureReason || !mainResult.html.trim()) {
     if (debug) {
       console.info(
@@ -307,7 +321,7 @@ async function parseJobkoreaFromPage(
   }
 
   // 상세 공고 본문(B영역) iframe을 별도로 가져온다.
-  const detailBody = await fetchJobkoreaDetailBody(gno, url, httpTimeout);
+  const detailBody = await fetchJobkoreaDetailBody(gno, parseUrl, httpTimeout);
   if (debug) {
     console.info(
       `[parse] jobkorea detail body textLen=${detailBody.text.length} images=${detailBody.imageUrls.length}`
