@@ -336,6 +336,7 @@ export function parseJobkoreaDetail(
     deadline_date: meta.deadline_date,
     required_documents: "",
     application_method: "",
+    detail_image_urls: detailBody.imageUrls ?? [],
   };
 
   const raw_text = buildJobkoreaRawText(meta, detailBody);

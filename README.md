@@ -22,6 +22,10 @@ npm run dev
 | `CORS_ORIGIN` | 허용할 프론트엔드 URL. 여러 개는 쉼표 구분 (예: `http://localhost:3000,https://your-app.vercel.app`) |
 | `CORS_ALLOW_VERCEL` | `true`면 `*.vercel.app` 도메인도 허용 (기본 권장) |
 | `PORT` | API 포트 (기본 4000) |
+| `OCR_TIMEOUT_MS` | 원격 이미지 OCR 총 시간 예산 (기본 8000) |
+| `OCR_MAX_IMAGES` | 공고당 OCR 처리할 최대 이미지 수 (기본 6) |
+| `CLOVA_OCR_SECRET_KEY` | CLOVA OCR API 인증 시크릿 키 (`X-OCR-SECRET` 헤더) |
+| `CLOVA_OCR_API_URL` | NCP 콘솔에서 발급되는 CLOVA OCR 앱별 Invoke URL |
 
 ## DB 마이그레이션
 

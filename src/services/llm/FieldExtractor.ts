@@ -5,14 +5,18 @@ const MAX_INPUT_CHARS = 12000;
 const SYSTEM_PROMPT = [
   "You are an expert at parsing Korean job postings.",
   "Given the raw text of one job posting, split it into structured fields and return ONLY valid JSON matching the schema.",
+  "Only use content that is literally present in the input text. Never invent, infer, guess, or generate plausible-sounding content for a field. If the input has no usable content for a field (e.g. it only contains image URL markers like '[상세요강 이미지]' with no extracted text), return an empty string for that field — do not fabricate typical job-description boilerplate.",
   "Assign each piece of content to the single most appropriate field. Never mix unrelated content into a field.",
   "Field rules:",
   "- company_name: 채용하는 회사명.",
   "- job_title: 공고 제목.",
   "- recruitment_field: 모집 직무/부문 (예: 'RM 부정거래 모니터링 어시스턴트').",
   "- job_description: '주요업무/담당업무/직무 내용'에 해당하는 내용만. 회사소개, 슬로건(WE ARE 등), 인재상, 자격요건, 우대사항, 복리후생, 근무조건, 근무지, 근무시간, 채용절차, 접수방법, 제출서류, 유의사항은 절대 포함하지 말 것. 담당업무 섹션만 잘라 넣고, 그 앞뒤 전체 본문을 넣지 말 것.",
-  "- qualifications: 자격요건/지원자격 등 지원에 필요한 '필수' 요건만.",
-  "- preferences: '우대', '~하면 우대' 처럼 우대 조건으로 명시된 지원자 자격만. 근무제도/근무형태/근무시간/복리후생/급여는 여기에 넣지 말 것(해당 없으면 빈 문자열).",
+  "- qualifications / preferences: 공고마다 헤더 표현이 제각각이니 헤더 문구가 아니라 어조(필수 vs 선택)로 구분할 것.",
+  "  qualifications(필수): '자격요건', '지원자격', '필요 역량', '이런 분을 찾습니다/원해요', '다음 조건을 충족하는 분', 'Requirements' 처럼 지원의 전제조건으로 요구되는 항목. 문장이 '~해야 함', '~한 분', '~을 보유한 자'처럼 필수를 전제하는 어조면 헤더가 없어도 여기.",
+  "  preferences(선택/가산점): '우대사항', '우대', '이런 경우 환영해요/좋아요', '있으면 좋음', '가산점', 'Preferred/Nice to have' 처럼 없어도 지원엔 지장 없고 있으면 가점되는 항목. 문장이 '~이면 우대', '~하신 분 환영', '~경험이 있다면 더 좋음'처럼 선택 어조면 헤더가 없어도 여기.",
+  "  헤더 문구만 보고 기계적으로 분류하지 말고 문장의 의미(필수로 요구하는지, 있으면 가점인지)로 판단할 것. 애매하면 qualifications보다 완화된 요구는 preferences로.",
+  "  근무제도/근무형태/근무시간/복리후생/급여는 둘 다 넣지 말 것(해당 없으면 빈 문자열).",
   "- industry: 업종.",
   "- deadline_raw: '마감일/접수 마감일'의 원문. 상시채용/수시채용/'상시 채용중'/'~ 상시'이면 정확히 '상시채용'. '채용시 마감'은 상시채용이 아니므로 빈 문자열. 시작일/등록일/게시일은 넣지 말 것. 없으면 빈 문자열.",
   "- deadline_date: 마감일을 YYYY-MM-DD로. 마감일이 없거나 상시/수시채용이면 null.",
@@ -60,6 +64,10 @@ const FIELD_SCHEMA = {
 export interface ExtractedJobFields extends ParsedFields {
   is_image_based: boolean;
 }
+
+// detail_image_urls(string[])/deadline_date(string|null)를 뺀, 값 타입이 항상 string인 필드만.
+// 아래 병합 루프들은 값을 string으로 취급하므로 이 키 집합만 다룬다.
+type ScalarFieldKey = Exclude<keyof ParsedFields, "deadline_date" | "detail_image_urls">;
 
 export interface FieldExtractor {
   extract(rawText: string): Promise<ExtractedJobFields | null>;
@@ -269,7 +277,7 @@ export function mergeLlmFields(
 ): ParsedFields {
   const merged = { ...base };
 
-  const contentKeys: (keyof ParsedFields)[] = [
+  const contentKeys: ScalarFieldKey[] = [
     "job_description",
     "qualifications",
     "preferences",
@@ -279,7 +287,7 @@ export function mergeLlmFields(
     if (value) merged[key] = value;
   }
 
-  const fallbackKeys: (keyof ParsedFields)[] = [
+  const fallbackKeys: ScalarFieldKey[] = [
     "company_name",
     "job_title",
     "industry",
@@ -312,7 +320,7 @@ export function mergeParsedFields(
 ): ParsedFields {
   const merged = { ...base };
 
-  const stringKeys: (keyof ParsedFields)[] = [
+  const stringKeys: ScalarFieldKey[] = [
     "company_name",
     "job_title",
     "recruitment_field",
