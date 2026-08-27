@@ -91,7 +91,7 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
         },
         body: JSON.stringify({
           model,
-          reasoning_effort: "minimal",
+          reasoning_effort: "low",
           // temperature는 이 모델(reasoning 계열)에서 1 고정, 변경 불가(400).
           // seed는 재현성 best-effort(OpenAI 비보장)라 변동을 줄이는 용도로만 사용.
           seed: 0,
