@@ -19,8 +19,9 @@ import {
   createFieldExtractor,
   mergeLlmFields,
   resolveIsImageBased,
+  type ExtractedJobFields,
 } from "./llm/FieldExtractor.js";
-import { fetchAndParse, classifyParseResult } from "./parser/index.js";
+import { fetchAndParse, classifyParseResult, emptyFields } from "./parser/index.js";
 import { recognizeRemoteImages } from "./ocrService.js";
 import { validateJobUrl } from "./parser/urlValidator.js";
 import { logEvent } from "./analyticsService.js";
@@ -47,7 +48,7 @@ export type DeadlineStatus = "always_open" | "closed" | null;
 export interface JobPostingRow {
   id: string;
   user_id: string;
-  source_url: string;
+  source_url: string | null;
   platform: string;
   parsing_status: string;
   parse_failure_reason: string | null;
@@ -386,6 +387,127 @@ function detectImageBasedFromFields(fields: {
   raw_text: string;
 }): boolean {
   return resolveIsImageBased(fields.raw_text, null);
+}
+
+/**
+ * 수동 추가: 사용자가 붙여넣은 JD 원문을 파싱만 하고 DB에는 쓰지 않는다.
+ * URL 경로(parseAndCreateJob)와 통합 헬퍼로 묶지 않는다 — 마감일 처리(LLM 값을 그대로
+ * 채택)와 is_image_based(항상 false) 정책이 URL 경로와 반대라, 공유 함수로 묶으면
+ * boolean 플래그로 분기하는 함수가 되어 오히려 기존 파싱 경로의 리스크만 커진다.
+ */
+/** parseRawText의 순수 변환부. 네트워크 없이 단위 테스트하기 위해 분리. */
+export function buildManualDraft(
+  rawText: string,
+  extracted: ExtractedJobFields | null,
+  keywords: StructuredKeyword[]
+) {
+  const fields = extracted
+    ? { ...emptyFields(), ...extracted, raw_text: rawText }
+    : { ...emptyFields(), raw_text: rawText };
+  fields.recruitment_field = fields.job_title;
+
+  // URL 경로(mergeLlmFields)와 달리 여기선 LLM 마감일을 그대로 채택한다.
+  // 대체할 파서(dt/dd) 값이 없기 때문.
+  const deadlineFields = resolveDeadlineFields(fields.deadline_raw, fields.deadline_date);
+  const classification = classifyParseResult(fields, false);
+
+  return {
+    ...fields,
+    ...deadlineFields,
+    competency_keywords: normalizeStructuredKeywords(keywords),
+    parsing_status: classification.status,
+    parse_failure_reason: null as string | null,
+    is_image_based: false,
+    platform: "manual",
+    source_url: null as string | null,
+  };
+}
+
+export async function parseRawText(rawText: string) {
+  const extracted = await createFieldExtractor().extract(rawText);
+  const fields = extracted ?? null;
+  const keywords = await createKeywordExtractor().extract({
+    qualifications: fields?.qualifications ?? "",
+    preferences: fields?.preferences ?? "",
+  });
+  return buildManualDraft(rawText, extracted, keywords);
+}
+
+export async function createManualJob(
+  userId: string,
+  payload: {
+    folder_id?: string | null;
+    company_name?: string;
+    job_title?: string;
+    recruitment_field?: string;
+    job_description?: string;
+    qualifications?: string;
+    preferences?: string;
+    industry?: string;
+    deadline_raw?: string;
+    deadline_date?: string | null;
+    deadline_status?: DeadlineStatus;
+    required_documents?: string;
+    application_method?: string;
+    raw_text: string;
+    memo?: string;
+    competency_keywords?: unknown;
+  }
+) {
+  const resolvedFolderId = await validateFolderId(userId, payload.folder_id ?? null);
+
+  const jobTitle = payload.recruitment_field ?? payload.job_title ?? "";
+  const fields = {
+    company_name: payload.company_name ?? "",
+    job_title: jobTitle,
+    recruitment_field: jobTitle,
+    job_description: payload.job_description ?? "",
+    qualifications: payload.qualifications ?? "",
+    preferences: payload.preferences ?? "",
+    industry: payload.industry ?? "",
+    deadline_raw: payload.deadline_raw ?? "",
+    deadline_date: payload.deadline_date ?? null,
+    required_documents: payload.required_documents ?? "",
+    application_method: payload.application_method ?? "",
+    raw_text: payload.raw_text,
+  };
+  const classification = classifyParseResult(
+    { ...emptyFields(), ...fields },
+    false
+  );
+  const keywords = normalizeStructuredKeywords(
+    parseStructuredKeywords(payload.competency_keywords ?? [])
+  );
+
+  const row = {
+    source_url: null as string | null,
+    platform: "manual",
+    parsing_status: classification.status,
+    parse_failure_reason: null as string | null,
+    folder_id: resolvedFolderId,
+    ...fields,
+    deadline_status: payload.deadline_status ?? null,
+    memo: payload.memo ?? "",
+    competency_keywords: keywords,
+    is_image_based: false,
+  };
+
+  if (!isSupabaseConfigured()) {
+    const job = devCreateJob(userId, row);
+    return job;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("job_postings")
+    .insert({ user_id: userId, ...row })
+    .select()
+    .single();
+
+  if (error) throw new AppError(500, "공고 저장에 실패했습니다.", "save_failed");
+
+  await logEvent(userId, "manual_created", { job_id: data.id, folder_id: resolvedFolderId });
+
+  return normalizeJobRow(data);
 }
 
 export async function listJobs(
