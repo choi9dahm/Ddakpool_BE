@@ -7,7 +7,8 @@ export type AnalyticsEventName =
   | "parse_result"
   | "folder_assigned"
   | "tag_assigned"
-  | "save_success";
+  | "save_success"
+  | "manual_created";
 
 export async function logEvent(
   userId: string | null,

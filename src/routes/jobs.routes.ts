@@ -2,12 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   addJobImage,
+  createManualJob,
   deleteJob,
   deleteJobImage,
   getAllKeywords,
   getJob,
   listJobs,
   parseAndCreateJob,
+  parseRawText,
   updateJob,
   type SortOption,
 } from "../services/jobService.js";
@@ -24,6 +26,10 @@ const structuredKeywordSchema = z.object({
 const parseSchema = z.object({
   url: z.string().min(1),
   folder_id: z.string().uuid().nullable().optional(),
+});
+
+const parseTextSchema = z.object({
+  raw_text: z.string().min(1),
 });
 
 const updateJobSchema = z.object({
@@ -51,6 +57,10 @@ const updateJobSchema = z.object({
     .optional(),
 });
 
+const createJobSchema = updateJobSchema.extend({
+  raw_text: z.string().min(1),
+});
+
 export async function jobsRoutes(app: FastifyInstance) {
   app.post("/jobs/parse", async (request) => {
     const body = parseSchema.parse(request.body);
@@ -59,6 +69,18 @@ export async function jobsRoutes(app: FastifyInstance) {
       body.url,
       body.folder_id ?? null
     );
+  });
+
+  // 수동 추가 1단계: 원문 텍스트 파싱만, DB에는 쓰지 않는다.
+  app.post("/jobs/parse-text", async (request) => {
+    const { raw_text } = parseTextSchema.parse(request.body);
+    return parseRawText(raw_text);
+  });
+
+  // 수동 추가 2단계: 사용자가 '저장하기'를 눌렀을 때만 생성.
+  app.post("/jobs", async (request) => {
+    const body = createJobSchema.parse(request.body);
+    return createManualJob(request.user!.id, body);
   });
 
   app.get("/jobs", async (request) => {

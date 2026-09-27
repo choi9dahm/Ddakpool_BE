@@ -439,7 +439,7 @@ async function fetchHtml(
   }
 }
 
-function emptyFields(): ParsedFields {
+export function emptyFields(): ParsedFields {
   return {
     company_name: "",
     job_title: "",
