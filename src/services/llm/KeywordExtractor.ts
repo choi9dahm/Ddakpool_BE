@@ -8,6 +8,7 @@ export interface KeywordExtractor {
 }
 
 const SYSTEM_PROMPT = `Extract competency keywords from job qualifications and preferences.
+Exclude education-level requirements (e.g. "초대졸 이상", "학사 이상", "대졸", "석사 우대", "고졸 이상") — these are not competency keywords, skip them entirely.
 Return JSON array of objects with fields:
 - text: keyword string (max 15 Korean chars or 20 English chars)
 - source_section: one of "자격요건", "우대사항", "기타"
@@ -15,11 +16,16 @@ Return JSON array of objects with fields:
 - source: always "llm"
 Max 30 items total.`;
 
-function stubSection(text: string, section: "자격요건" | "우대사항") {
+// 학력 요건(예: '초대졸 이상', '학사 우대')은 역량 키워드가 아니므로 제외.
+const EDUCATION_LEVEL_PATTERN =
+  /(고졸|초대졸|대졸|전문학사|학사|석사|박사|대학원)\s*(이상|우대|졸업)?/;
+
+export function stubSection(text: string, section: "자격요건" | "우대사항") {
   return text
     .split(/[,·\n/|]+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2 && t.length <= 20)
+    .filter((t) => !EDUCATION_LEVEL_PATTERN.test(t))
     .map((textValue, order) => ({
       text: textValue,
       source_section: section,
@@ -85,7 +91,10 @@ export class OpenAIKeywordExtractor implements KeywordExtractor {
         },
         body: JSON.stringify({
           model,
-          reasoning_effort: "minimal",
+          reasoning_effort: "low",
+          // temperature는 이 모델(reasoning 계열)에서 1 고정, 변경 불가(400).
+          // seed는 재현성 best-effort(OpenAI 비보장)라 변동을 줄이는 용도로만 사용.
+          seed: 0,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: userContent },
@@ -176,4 +185,20 @@ export function normalizeKeywords(keywords: string[]): StructuredKeyword[] {
       order,
       source: "user" as const,
     }));
+}
+
+if (process.argv[1] && /KeywordExtractor\.(ts|js)$/.test(process.argv[1])) {
+  // 자가 점검: `npx tsx src/services/llm/KeywordExtractor.ts`
+  const assert = (cond: boolean, msg: string) => {
+    if (!cond) throw new Error(`self-check failed: ${msg}`);
+  };
+
+  const texts = stubSection("초대졸 이상, React, 학사 우대, TypeScript", "자격요건").map(
+    (k) => k.text
+  );
+  assert(!texts.includes("초대졸 이상"), "학력 요건(초대졸 이상) 제외");
+  assert(!texts.includes("학사 우대"), "학력 요건(학사 우대) 제외");
+  assert(texts.includes("React") && texts.includes("TypeScript"), "역량 키워드는 유지");
+
+  console.log("KeywordExtractor self-check passed");
 }

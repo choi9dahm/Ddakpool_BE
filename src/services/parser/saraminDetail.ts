@@ -323,6 +323,7 @@ export function parseSaraminDetail(
     deadline_date: deadline_raw === "상시채용" ? null : parseDeadline(deadline_raw),
     required_documents,
     application_method,
+    detail_image_urls: detailBody?.imageUrls ?? [],
   };
 
   const raw_text = buildSaraminRawText($, baseFields, detailBody);

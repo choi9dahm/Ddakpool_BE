@@ -29,6 +29,8 @@ export interface ParsedFields {
   required_documents: string;
   application_method: string;
   raw_text: string;
+  /** 상세요강 iframe에서 수집된 이미지 URL(원격 OCR 대상). 파서마다 없을 수 있어 optional. */
+  detail_image_urls?: string[];
 }
 
 const REQUIRED_FIELD_KEYS: (keyof ParsedFields)[] = [
@@ -114,6 +116,7 @@ export async function parseSaramin(
     required_documents,
     application_method,
     raw_text,
+    detail_image_urls: [],
   };
 }
 
@@ -151,6 +154,7 @@ export async function parseJobkorea(
     required_documents,
     application_method,
     raw_text,
+    detail_image_urls: [],
   };
 }
 
@@ -449,5 +453,6 @@ function emptyFields(): ParsedFields {
     required_documents: "",
     application_method: "",
     raw_text: "",
+    detail_image_urls: [],
   };
 }

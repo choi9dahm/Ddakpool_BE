@@ -21,6 +21,7 @@ import {
   resolveIsImageBased,
 } from "./llm/FieldExtractor.js";
 import { fetchAndParse, classifyParseResult } from "./parser/index.js";
+import { recognizeRemoteImages } from "./ocrService.js";
 import { validateJobUrl } from "./parser/urlValidator.js";
 import { logEvent } from "./analyticsService.js";
 import { resolveJobImage, resolveJobImages, resolveJobsImages } from "./jobImageUrl.js";
@@ -227,6 +228,25 @@ export async function parseAndCreateJob(
   );
 
   let fields = parsedFields;
+
+  // 원격 이미지 자동 OCR: 상세요강이 이미지로만 제공된 공고의 raw_text를 보강한다.
+  // classify/LLM 추출보다 먼저 실행해 OCR 텍스트가 이후 파이프라인에 전부 반영되게 한다.
+  const ocrAttempted = !fetchFailed && (fields.detail_image_urls?.length ?? 0) > 0;
+  let ocrText = "";
+  if (ocrAttempted) {
+    ocrText = await recognizeRemoteImages(
+      fields.detail_image_urls!,
+      Number(process.env.OCR_TIMEOUT_MS ?? 8000),
+      validation.normalizedUrl
+    );
+    if (ocrText.trim()) {
+      fields = {
+        ...fields,
+        raw_text: `${fields.raw_text}\n\n[상세요강 이미지 OCR]\n${ocrText.trim()}`,
+      };
+    }
+  }
+
   let classification = classifyParseResult(fields, fetchFailed);
   let isImageBased = detectImageBasedFromFields(fields);
 
@@ -257,7 +277,10 @@ export async function parseAndCreateJob(
   const extractor = createKeywordExtractor();
 
   let keywords: StructuredKeyword[] = [];
-  if (classification.status !== "fail" && !isImageBased) {
+  if (
+    classification.status !== "fail" &&
+    (fields.qualifications.trim() || fields.preferences.trim())
+  ) {
     keywords = await extractor.extract({
       qualifications: fields.qualifications,
       preferences: fields.preferences,
@@ -342,6 +365,14 @@ export async function parseAndCreateJob(
     job_id: data.id,
     folder_id: resolvedFolderId,
     is_image_based: isImageBased,
+    ocr_attempted: ocrAttempted,
+    ocr_filled_field: Boolean(
+      ocrAttempted &&
+        ocrText.trim() &&
+        (fields.qualifications.trim() ||
+          fields.preferences.trim() ||
+          fields.job_description.trim())
+    ),
   });
 
   return {
