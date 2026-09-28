@@ -14,7 +14,11 @@ import {
   type SortOption,
 } from "../services/jobService.js";
 import { uploadJobImage } from "../services/profileService.js";
+import { recognizeBuffer } from "../services/ocrService.js";
 import { isSupabaseConfigured } from "../db/supabase.js";
+
+// 첨부 상한(5장)과 맞춘다. CLOVA는 유료 API라 호출당 비용 캡 역할도 겸한다.
+const OCR_MAX_FILES = 5;
 
 const structuredKeywordSchema = z.object({
   text: z.string().min(1).max(20),
@@ -129,6 +133,60 @@ export async function jobsRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     await deleteJob(request.user!.id, id);
     return { ok: true };
+  });
+
+  // 이미지 텍스트 변환. 상태를 만들지 않으므로 :id를 받지 않는다 — 아직 저장되지 않은
+  // draft 공고(첨부만 해둔 상태)에서도 그대로 쓸 수 있어야 하기 때문.
+  app.post("/jobs/ocr", async (request, reply) => {
+    const texts: string[] = [];
+    let received = 0;
+
+    for await (const part of request.files()) {
+      received += 1;
+      if (received > OCR_MAX_FILES) {
+        return reply.status(400).send({
+          error: "too_many_files",
+          message: `이미지는 한 번에 최대 ${OCR_MAX_FILES}장까지 변환할 수 있어요.`,
+        });
+      }
+
+      if (!["image/jpeg", "image/png", "image/jpg"].includes(part.mimetype)) {
+        return reply.status(400).send({
+          error: "invalid_format",
+          message: "JPG, PNG 파일만 변환할 수 있어요.",
+        });
+      }
+
+      const buffer = await part.toBuffer();
+      if (buffer.length > 4 * 1024 * 1024) {
+        return reply.status(400).send({
+          error: "file_too_large",
+          message: "4MB 이하의 파일만 변환할 수 있어요.",
+        });
+      }
+
+      // 개별 실패는 빈 문자열이라 조용히 건너뛴다(best-effort). 전부 실패하면 아래에서 400.
+      const text = await recognizeBuffer(
+        buffer,
+        part.mimetype.includes("png") ? "png" : "jpg"
+      );
+      if (text.trim()) texts.push(text.trim());
+    }
+
+    if (received === 0) {
+      return reply
+        .status(400)
+        .send({ error: "no_file", message: "변환할 이미지를 선택해 주세요." });
+    }
+
+    if (texts.length === 0) {
+      return reply.status(422).send({
+        error: "no_text_recognized",
+        message: "이미지에서 텍스트를 찾지 못했어요.",
+      });
+    }
+
+    return { text: texts.join("\n\n") };
   });
 
   app.post("/jobs/:id/images", async (request, reply) => {
