@@ -57,8 +57,11 @@ const updateJobSchema = z.object({
     .optional(),
 });
 
+// source_url은 생성 시에만 받는다. updateJobSchema에는 일부러 넣지 않아
+// PATCH로는 변경할 수 없게 유지한다.
 const createJobSchema = updateJobSchema.extend({
   raw_text: z.string().min(1),
+  source_url: z.string().nullable().optional(),
 });
 
 export async function jobsRoutes(app: FastifyInstance) {

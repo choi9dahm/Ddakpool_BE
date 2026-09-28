@@ -452,6 +452,7 @@ export async function createManualJob(
     raw_text: string;
     memo?: string;
     competency_keywords?: unknown;
+    source_url?: string | null;
   }
 ) {
   const resolvedFolderId = await validateFolderId(userId, payload.folder_id ?? null);
@@ -480,7 +481,7 @@ export async function createManualJob(
   );
 
   const row = {
-    source_url: null as string | null,
+    source_url: normalizeManualSourceUrl(payload.source_url),
     platform: "manual",
     parsing_status: classification.status,
     parse_failure_reason: null as string | null,
@@ -523,6 +524,11 @@ export async function createManualJob(
       );
     }
 
+    // 원문 링크를 받으므로 (user_id, source_url) unique index에 실제로 걸릴 수 있다.
+    if (error.code === "23505") {
+      throw new AppError(409, "이미 저장된 공고입니다.", "duplicate_url");
+    }
+
     throw new AppError(500, "공고 저장에 실패했습니다.", "save_failed");
   }
 
@@ -539,6 +545,21 @@ export async function createManualJob(
   }
 
   return normalizeJobRow(data);
+}
+
+/**
+ * 수동 추가의 원문 링크 정규화.
+ * - 빈 문자열은 반드시 null로 — ''로 저장하면 링크 없는 두 번째 공고가
+ *   (user_id, source_url) unique index에 걸린다. NULL끼리는 충돌하지 않는다.
+ * - 스킴이 없으면 https://를 붙인다. 스킴 없는 값은 <a href>에서 상대 경로로
+ *   해석되어 "원본 공고 보러가기" 링크가 깨진다.
+ */
+export function normalizeManualSourceUrl(
+  input: string | null | undefined
+): string | null {
+  const trimmed = (input ?? "").trim();
+  if (!trimmed) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 /** 004_manual_add.sql 미적용으로 인한 insert 실패인지. */
