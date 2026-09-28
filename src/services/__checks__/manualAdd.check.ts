@@ -7,7 +7,11 @@
  * "수동 추가 공고는 마감일이 영원히 비어 D-day가 안 뜬다"는 회귀가 조용히 재발한다.
  */
 import assert from "node:assert/strict";
-import { buildManualDraft } from "../jobService.js";
+import {
+  buildManualDraft,
+  isMissingManualAddMigration,
+  normalizeManualSourceUrl,
+} from "../jobService.js";
 import type { ExtractedJobFields } from "../llm/FieldExtractor.js";
 
 function fakeExtracted(overrides: Partial<ExtractedJobFields> = {}): ExtractedJobFields {
@@ -59,4 +63,67 @@ function fakeExtracted(overrides: Partial<ExtractedJobFields> = {}): ExtractedJo
   assert.equal(draft.parsing_status, "partial", "빈 필드지만 raw_text는 있으니 partial");
 }
 
-console.log("manualAdd.check.ts: OK (3 assertions)");
+// 4. 004_manual_add.sql 미적용 시 실제로 나는 Postgres 에러들을 정확히 잡아내야 한다.
+//    이 분류가 틀리면 "잠시 후 다시 시도해 주세요"로 뭉개져 원인을 알 수 없게 된다
+//    (실제로 이 일이 있었음 — 수동 추가 저장 실패 진단 지연의 원인).
+{
+  assert.equal(
+    isMissingManualAddMigration({ code: "23502" }),
+    true,
+    "source_url NOT NULL 위반(23502)을 잡아야 함"
+  );
+  assert.equal(
+    isMissingManualAddMigration({ code: "22P02" }),
+    true,
+    "platform enum에 'manual' 없음(22P02)을 잡아야 함"
+  );
+  assert.equal(
+    isMissingManualAddMigration({
+      message: 'invalid input value for enum platform_type: "manual"',
+    }),
+    true,
+    "code 없이 message만 와도 잡아야 함"
+  );
+  assert.equal(
+    isMissingManualAddMigration({ code: "23505", message: "duplicate key value" }),
+    false,
+    "무관한 에러(중복 등)까지 스키마 미적용으로 오분류하면 안 됨"
+  );
+  assert.equal(
+    isMissingManualAddMigration({ code: "23503", message: "foreign key violation" }),
+    false,
+    "무관한 에러(FK 위반)까지 오분류하면 안 됨"
+  );
+}
+
+// 5. 원문 링크 정규화. 빈 값이 ''로 저장되면 링크 없는 두 번째 공고가
+//    (user_id, source_url) unique index에 걸려 "이미 저장된 공고입니다"가 뜬다.
+//    스킴 없는 값은 <a href>에서 상대 경로가 되어 링크가 깨진다.
+{
+  assert.equal(normalizeManualSourceUrl(undefined), null, "미입력 → null");
+  assert.equal(normalizeManualSourceUrl(null), null, "null → null");
+  assert.equal(normalizeManualSourceUrl(""), null, "빈 문자열 → null (''로 저장 금지)");
+  assert.equal(normalizeManualSourceUrl("   "), null, "공백만 → null");
+  assert.equal(
+    normalizeManualSourceUrl("example.com/jobs/1"),
+    "https://example.com/jobs/1",
+    "스킴 없으면 https:// 부착"
+  );
+  assert.equal(
+    normalizeManualSourceUrl("https://example.com/jobs/1"),
+    "https://example.com/jobs/1",
+    "https는 그대로"
+  );
+  assert.equal(
+    normalizeManualSourceUrl("http://example.com/jobs/1"),
+    "http://example.com/jobs/1",
+    "http도 그대로 (https로 바꾸지 않음)"
+  );
+  assert.equal(
+    normalizeManualSourceUrl("  https://example.com/x  "),
+    "https://example.com/x",
+    "앞뒤 공백 제거"
+  );
+}
+
+console.log("manualAdd.check.ts: OK (5 assertions)");

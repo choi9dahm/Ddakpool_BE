@@ -452,6 +452,7 @@ export async function createManualJob(
     raw_text: string;
     memo?: string;
     competency_keywords?: unknown;
+    source_url?: string | null;
   }
 ) {
   const resolvedFolderId = await validateFolderId(userId, payload.folder_id ?? null);
@@ -480,7 +481,7 @@ export async function createManualJob(
   );
 
   const row = {
-    source_url: null as string | null,
+    source_url: normalizeManualSourceUrl(payload.source_url),
     platform: "manual",
     parsing_status: classification.status,
     parse_failure_reason: null as string | null,
@@ -503,11 +504,72 @@ export async function createManualJob(
     .select()
     .single();
 
-  if (error) throw new AppError(500, "공고 저장에 실패했습니다.", "save_failed");
+  if (error) {
+    // 에러 객체를 버리면 원인을 알 길이 없다. 004 미적용이 "잠시 후 다시 시도해 주세요"로
+    // 둔갑해 디버깅이 막혔던 이력이 있어 반드시 남긴다.
+    console.error("[createManualJob] insert failed", {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
 
-  await logEvent(userId, "manual_created", { job_id: data.id, folder_id: resolvedFolderId });
+    // 수동 공고는 source_url=null + platform='manual'을 쓴다. 004_manual_add.sql이
+    // 적용되지 않은 DB에서는 NOT NULL(23502)이나 enum 미존재(22P02)로 떨어진다.
+    if (isMissingManualAddMigration(error)) {
+      throw new AppError(
+        500,
+        "서버 DB 스키마가 최신이 아니에요. 관리자에게 문의해 주세요. (마이그레이션 004_manual_add.sql 미적용)",
+        "schema_outdated"
+      );
+    }
+
+    // 원문 링크를 받으므로 (user_id, source_url) unique index에 실제로 걸릴 수 있다.
+    if (error.code === "23505") {
+      throw new AppError(409, "이미 저장된 공고입니다.", "duplicate_url");
+    }
+
+    throw new AppError(500, "공고 저장에 실패했습니다.", "save_failed");
+  }
+
+  // 저장은 이미 커밋됐다. 분석 로깅 실패가 성공한 저장을 실패로 보이게 하면
+  // 사용자가 다시 눌러 행이 중복 생성된다 (수동 공고는 source_url이 NULL이라
+  // unique index가 막아주지 못한다).
+  try {
+    await logEvent(userId, "manual_created", {
+      job_id: data.id,
+      folder_id: resolvedFolderId,
+    });
+  } catch (err) {
+    console.error("[createManualJob] logEvent failed (저장은 성공)", err);
+  }
 
   return normalizeJobRow(data);
+}
+
+/**
+ * 수동 추가의 원문 링크 정규화.
+ * - 빈 문자열은 반드시 null로 — ''로 저장하면 링크 없는 두 번째 공고가
+ *   (user_id, source_url) unique index에 걸린다. NULL끼리는 충돌하지 않는다.
+ * - 스킴이 없으면 https://를 붙인다. 스킴 없는 값은 <a href>에서 상대 경로로
+ *   해석되어 "원본 공고 보러가기" 링크가 깨진다.
+ */
+export function normalizeManualSourceUrl(
+  input: string | null | undefined
+): string | null {
+  const trimmed = (input ?? "").trim();
+  if (!trimmed) return null;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
+/** 004_manual_add.sql 미적용으로 인한 insert 실패인지. */
+export function isMissingManualAddMigration(error: {
+  code?: string | null;
+  message?: string | null;
+}): boolean {
+  // 23502: source_url NOT NULL 위반, 22P02: platform_type에 'manual' 없음
+  if (error.code === "23502" || error.code === "22P02") return true;
+  return /invalid input value for enum platform_type/i.test(error.message ?? "");
 }
 
 export async function listJobs(
