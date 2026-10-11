@@ -41,10 +41,9 @@ async function start() {
     await shutdownPostHog();
   });
 
-  await app.register(authRoutes);
-
   app.register(async (protectedRoutes) => {
     protectedRoutes.addHook("preHandler", authMiddleware);
+    await protectedRoutes.register(authRoutes);
     await protectedRoutes.register(guestRoutes);
     await protectedRoutes.register(profileRoutes);
     await protectedRoutes.register(jobsRoutes);
