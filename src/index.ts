@@ -6,6 +6,7 @@ import { supabaseAdmin } from "./db/supabase.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.routes.js";
+import { guestRoutes } from "./routes/guest.routes.js";
 import { profileRoutes } from "./routes/profile.routes.js";
 import { jobsRoutes } from "./routes/jobs.routes.js";
 import { foldersRoutes } from "./routes/folders.routes.js";
@@ -44,6 +45,7 @@ async function start() {
 
   app.register(async (protectedRoutes) => {
     protectedRoutes.addHook("preHandler", authMiddleware);
+    await protectedRoutes.register(guestRoutes);
     await protectedRoutes.register(profileRoutes);
     await protectedRoutes.register(jobsRoutes);
     await protectedRoutes.register(foldersRoutes);

@@ -6,6 +6,7 @@ import { AppError } from "./errorHandler.js";
 export interface AuthenticatedUser {
   id: string;
   email: string;
+  isAnonymous: boolean;
 }
 
 declare module "fastify" {
@@ -23,7 +24,11 @@ export async function authMiddleware(
   if (!isSupabaseConfigured()) {
     const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
     if (token === DEV_AUTH_TOKEN) {
-      request.user = { id: DEV_USER_ID, email: "dev@local.test" };
+      request.user = {
+        id: DEV_USER_ID,
+        email: "dev@local.test",
+        isAnonymous: false,
+      };
       return;
     }
     throw new AppError(401, "인증이 필요합니다.", "unauthorized");
@@ -43,5 +48,6 @@ export async function authMiddleware(
   request.user = {
     id: data.user.id,
     email: data.user.email ?? "",
+    isAnonymous: data.user.is_anonymous ?? false,
   };
 }
